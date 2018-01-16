@@ -56,10 +56,13 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL){
     clauses = append(clauses, filterClauses)
   }
   
-  #filter <- makeFilter(clauses)
-  #print(filter)
+  filter <- do.call(makeFilter, clauses)
+  if (length(clauses) > 0){
+    print('TCR enriched meta filter')
+    print(filter)
+  }
 
-    df <- labkey.selectRows(
+  df <- labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
     folderPath="/Internal/Bimber/", 
     schemaName="tcrdb", 
@@ -73,10 +76,7 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL){
     ),
     containerFilter=NULL,
     colNameOpt='rname',
-    colFilter=makeFilter(
-      c('enrichedReadsetId', 'NON_BLANK', ''), 
-      c('enrichedReadsetId/totalFiles', 'GT', 0)
-    )
+    colFilter=filter
   )
   
   df <- doSharedColumnRename(df)
@@ -120,8 +120,11 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL){
     clauses = append(clauses, filterClauses)
   }
   
-  #filter <- makeFilter(clauses)
-  #print(filter)
+  filter <- do.call(makeFilter, clauses)
+  if (length(clauses) > 0){
+    print('Full transcript meta filter')
+    print(filter)
+  }
   
   df <- labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
@@ -137,10 +140,7 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL){
     ),
     containerFilter=NULL,
     colNameOpt='rname',
-    colFilter=makeFilter(
-      c('readsetId', 'NON_BLANK', ''), 
-      c('readsetId/totalFiles', 'GT', 0)
-    )
+    colFilter=filter
   )
   
   df <- doSharedColumnRename(df)
@@ -210,14 +210,17 @@ doSharedColumnRename <- function(df){
   return(df)
 }
 
-pullTCRResultsFromLabKey <- function(colFilters = NULL){
-  # TODO
-  # colFilter = NULL
-  # if (!is.null(colFilters)){
-  #   print(str(colFilters))
-  #   colFilter = makeFilter(colFilters)
-  #   print(colFilter)
-  # }
+pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
+  colFilter = NULL
+  if (!is.null(colFilterClauses)){
+    colFilter = do.call(makeFilter, colFilterClauses)
+  }
+  
+  if (!is.null(colFilter)){
+    print('assay result filter')
+    print(colFilter)
+
+  }
   
   df <- labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
@@ -228,7 +231,7 @@ pullTCRResultsFromLabKey <- function(colFilters = NULL){
     colSelect=c('sampleName', 'subjectId','date','libraryId','libraryId/label','analysisId', 'analysisId/readset', 'locus','vHit','dHit','jHit','cHit','vGene', 'jGene','CDR3','count','fraction', 'disabled'), 
     containerFilter=NULL,
     colNameOpt='rname',
-    colFilter=colFilters
+    colFilter=colFilter
   )
   
   print(paste0('total assay rows (unfiltered): ', nrow(df)))
@@ -252,7 +255,7 @@ pullTCRResultsFromLabKey <- function(colFilters = NULL){
 }
 
 pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL){
-  results <- pullTCRResultsFromLabKey(colFilters = resultFilterClauses)
+  results <- pullTCRResultsFromLabKey(colFilterClauses = resultFilterClauses)
   meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses)
   
   results <- merge(results, meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId')) #, all.x=FALSE, all.y=FALSE
@@ -312,8 +315,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   dfb$percentageForLocus = dfb$count / dfb$totalTcrReadsForGroupAndLocus
   dfb <- dfb[dfb$totalTcrReadsForGroup >= minTcrReads,]
   dfb$totalCellsForCDR3 <- c(0)
-
-  columns <- c('SeqDataType', 'StimId', 'Population', 'IsSingleCell', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'date', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', '', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
+  columns <- c('SeqDataType', 'StimId', 'Population', 'IsSingleCell', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'date', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Replicate', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
   dfb <- dfb[,columns]
   print(paste0('total bulk rows: ', nrow(dfb)))
   
@@ -321,7 +323,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   dfs <- df[df$IsSingleCell,]
   print(paste0('starting single cell rows: ', nrow(dfs)))
   dfs <- dfs %>%
-    group_by(SeqDataType, StimId, Population, IsSingleCell, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, , totalCellsForGroup, totalCellsForGroupAndLocus) %>%
+    group_by(SeqDataType, StimId, Population, IsSingleCell, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus) %>%
     summarize(totalCellsForCDR3 = sum(Cells))
   dfs$Cells <- c(1)
   dfs$count <- dfs$totalCellsForCDR3
