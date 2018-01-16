@@ -11,90 +11,214 @@ library(data.table)
 #library(plyr)
 library(dtplyr)
 
-pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE){
-  df <- labkey.selectRows(
-    baseUrl="https://prime-seq.ohsu.edu", 
-    folderPath="/Internal/Bimber/145", 
-    schemaName="lists", 
-    queryName="TCR_Datasets", 
-    viewName="", 
-    showHidden=TRUE,
-    colSelect=c('ReadsetId','ReadsetId/application','ReadsetId/status','ReadsetId/workbook','ReadsetId/totalForwardReads','StimId','StimId/AnimalId','StimId/Date','StimId/Peptide','StimId/Treatment','Population','Replicate','Cells','StimId/ActivatedFreq','CellClass','StimId/Background','ReadsetId/numCDR3s','ReadsetId/distinctLoci','ReadsetId/numTcrRuns','SequenceComments','GroupId','GeneTable','Activated','Metadata/geneCountFiles','Metadata/estimatedLibrarySize', 'Key'), 
-    containerFilter=NULL,
-    colNameOpt='rname',
-    colFilter=makeFilter(c('ReadsetId', 'NON_BLANK', ''))
+pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL){
+  df <- rbind(pullFullTranscriptMetaFromLabKey(filterClauses), pullEnrichedMetaFromLabKey(filterClauses))
+  
+  #if (requireGeneFile){
+  #  df <- df[!is.na(df$OutputFileId),]  
+  #}
+  
+  df <- df[is.na(df$Status),]
+  
+  df$ResponseType <- c('Other')
+  df$ResponseType[df$Peptide %in% c('Gag120', 'Gag69')] <- c('MHC-E Supertope')
+  df$ResponseType[df$Peptide %in% c('Gag16', 'Gag18', 'Gag23', 'Gag30', 'Gag33', 'Gag50', 'Gag65', 'Gag97', 'Gag109', 'Gag119')] <- c('Other E-Restricted')
+  df$ResponseType[df$Peptide %in% c('Gag27/28')] <- c('Other Class II-Restricted')
+  df$ResponseType[df$Peptide %in% c('RL8', 'RL9', 'RL10', 'Gag37', 'QI9', 'LF8')] <- c('Conventional')
+  df$ResponseType <- as.factor(df$ResponseType)
+  
+  df <- df %>% 
+    group_by(SeqDataType, StimId, Population, Replicate, IsSingleCell) %>% 
+    mutate(totalCellsForGroup = sum(Cells))
+  
+  return(df)
+}
+
+reLevelFactor <- function(f, ordered){
+  for (l in rev(ordered)){
+    if (l %in% levels(f)){
+      f <- relevel(f, l)
+    } else {
+      print(paste0('unknown level: ', l))
+    }
+  }
+  
+  return(f)
+}
+
+pullEnrichedMetaFromLabKey <- function(filterClauses = NULL){
+  clauses <- list(
+    c('enrichedReadsetId', 'NON_BLANK', ''), 
+    c('enrichedReadsetId/totalFiles', 'GT', 0)
   )
   
-  names(df)[names(df)=="stimid_animalid"] <- "AnimalId"
-  df$AnimalId <- as.factor(df$AnimalId)
+  if (!is.null(filterClauses)){
+    clauses = append(clauses, filterClauses)
+  }
+  
+  #filter <- makeFilter(clauses)
+  #print(filter)
+
+    df <- labkey.selectRows(
+    baseUrl="https://prime-seq.ohsu.edu", 
+    folderPath="/Internal/Bimber/", 
+    schemaName="tcrdb", 
+    queryName="cdnas", 
+    viewName="", 
+    showHidden=TRUE,
+    colSelect=c(
+      'enrichedReadsetId','enrichedReadsetId/status','enrichedReadsetId/workbook','enrichedReadsetId/totalForwardReads','enrichedReadsetId/numCDR3s','enrichedReadsetId/distinctLoci','enrichedReadsetId/numTcrRuns',
+      'sortId', 'sortId/stimId','sortId/stimId/animalId','sortId/stimId/date','sortId/stimId/stim','sortId/stimId/treatment','sortId/stimId/activated','sortId/stimId/background',
+      'sortId/population','sortId/replicate','sortId/cells', "rowid"
+    ),
+    containerFilter=NULL,
+    colNameOpt='rname',
+    colFilter=makeFilter(
+      c('enrichedReadsetId', 'NON_BLANK', ''), 
+      c('enrichedReadsetId/totalFiles', 'GT', 0)
+    )
+  )
+  
+  df <- doSharedColumnRename(df)
+  
+  names(df)[names(df)=="enrichedreadsetid"] <- "ReadsetId"
+  df$ReadsetId <- as.integer(df$ReadsetId)
+  
+  names(df)[names(df)=="enrichedreadsetid_totalforwardreads"] <- "TotalReads"
+  df$TotalReads <- as.integer(df$TotalReads)
+  
+  names(df)[names(df)=="enrichedreadsetid_numcdr3s"] <- "NumCDR3s"
+  df$NumCDR3s <- as.integer(df$NumCDR3s)
+  
+  names(df)[names(df)=="enrichedreadsetid_distinctloci"] <- "DistinctLoci"
+  df$DistinctLoci <- as.factor(df$DistinctLoci)
+  
+  names(df)[names(df)=="enrichedreadsetid_numtcrruns"] <- "RunTCRRuns"
+  df$RunTCRRuns <- as.integer(df$RunTCRRuns)
+  
+  names(df)[names(df)=="enrichedreadsetid_workbook"] <- "WorkbookId"
+  df$WorkbookId <- as.factor(df$WorkbookId)
+  
+  names(df)[names(df)=="enrichedreadsetid_status"] <- "Status"
+  df$Status <- as.factor(df$Status)
+  
+  df$SeqDataType <- 'TCR_Enriched'
+  df$SeqDataType <- as.factor(df$SeqDataType)
+  
+  print(paste0('total TCR enriched rows: ' , nrow(df)))
+  
+  return(df)
+}
+
+pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL){
+  clauses = list(
+    c('readsetId', 'NON_BLANK', ''), 
+    c('readsetId/totalFiles', 'GT', 0)
+  )
+  
+  if (!is.null(filterClauses)){
+    clauses = append(clauses, filterClauses)
+  }
+  
+  #filter <- makeFilter(clauses)
+  #print(filter)
+  
+  df <- labkey.selectRows(
+    baseUrl="https://prime-seq.ohsu.edu", 
+    folderPath="/Internal/Bimber/", 
+    schemaName="tcrdb", 
+    queryName="cdnas", 
+    viewName="", 
+    showHidden=TRUE,
+    colSelect=c(
+      'readsetId','readsetId/status','readsetId/workbook','readsetId/totalForwardReads','readsetId/numCDR3s','readsetId/distinctLoci','readsetId/numTcrRuns',
+      'sortId', 'sortId/stimId','sortId/stimId/animalId','sortId/stimId/date','sortId/stimId/stim','sortId/stimId/treatment','sortId/stimId/activated','sortId/stimId/background',
+      'sortId/population','sortId/replicate','sortId/cells', "rowid"
+    ),
+    containerFilter=NULL,
+    colNameOpt='rname',
+    colFilter=makeFilter(
+      c('readsetId', 'NON_BLANK', ''), 
+      c('readsetId/totalFiles', 'GT', 0)
+    )
+  )
+  
+  df <- doSharedColumnRename(df)
   
   names(df)[names(df)=="readsetid"] <- "ReadsetId"
-  df$ReadsetId <- as.factor(df$ReadsetId)
-  
-  names(df)[names(df)=="metadata_estimatedlibrarysize"] <- "EstimatedLibrarySize"
-  df$EstimatedLibrarySize <- as.numeric(df$EstimatedLibrarySize)
+  df$ReadsetId <- as.integer(df$ReadsetId)
   
   names(df)[names(df)=="readsetid_totalforwardreads"] <- "TotalReads"
   df$TotalReads <- as.integer(df$TotalReads)
   
-  names(df)[names(df)=="stimid_peptide"] <- "Peptide"
-  df$Peptide <- as.factor(df$Peptide)
-  
-  names(df)[names(df)=="cellclass"] <- "Cellclass"
-  df$Cellclass <- as.factor(df$Cellclass)
-  
   names(df)[names(df)=="readsetid_numcdr3s"] <- "NumCDR3s"
   df$NumCDR3s <- as.integer(df$NumCDR3s)
-  
-  names(df)[names(df)=="population"] <- "Population"
-  df$Population <- as.factor(df$Population)
-  
-  names(df)[names(df)=="stimid"] <- "StimId"
-  df$StimId <- as.factor(df$StimId)
-  
-  names(df)[names(df)=="stimid_treatment"] <- "Treatment"
-  df$Treatment <- as.factor(df$Treatment)
   
   names(df)[names(df)=="readsetid_distinctloci"] <- "DistinctLoci"
   df$DistinctLoci <- as.factor(df$DistinctLoci)
   
   names(df)[names(df)=="readsetid_numtcrruns"] <- "RunTCRRuns"
   df$RunTCRRuns <- as.integer(df$RunTCRRuns)
-
-    names(df)[names(df)=="metadata_genecountfiles"] <- "OutputFileId"
-  df$OutputFileId <- as.factor(df$OutputFileId)
-  
-  names(df)[names(df)=="readsetid_application"] <- "Application"
-  df$Application <- as.factor(df$Application)
-  
-  names(df)[names(df)=="stimid_date"] <- "SampleDate"
-  names(df)[names(df)=="key"] <- "DatasetId"
   
   names(df)[names(df)=="readsetid_workbook"] <- "WorkbookId"
   df$WorkbookId <- as.factor(df$WorkbookId)
   
-  if (requireGeneFile){
-    df <- df[!is.na(df$OutputFileId),]  
-  }
+  names(df)[names(df)=="readsetid_status"] <- "Status"
+  df$Status <- as.factor(df$Status)
   
-  df$Status <- df$readsetid_status
-  df <- df[is.na(df$Status),]
+  df$SeqDataType <- 'Full_Transcriptome'
+  df$SeqDataType <- as.factor(df$SeqDataType)
   
-  # df$ResponseType <- c('Other')
-  # df$ResponseType[df$Peptide %in% c('Gag120', 'Gag69')] <- c('Supertope')
-  # df$ResponseType[df$Peptide %in% c('Gag16', 'Gag18', 'Gag23', 'Gag30', 'Gag33', 'Gag50', 'Gag65', 'Gag97', 'Gag109', 'Gag119')] <- c('Other E-Restricted')
-  # df$ResponseType[df$Peptide %in% c('Gag27', 'Gag37', 'QI9', 'LF8')] <- c('Other Class II-Restricted')
-  # df$ResponseType[df$Peptide %in% c('RL8', 'RL9', 'RL10')] <- c('Conventional')
-  # df$ResponseType <- as.factor(df$ResponseType)
-  
-  df <- df %>% 
-    group_by(StimId, Population, replicate, Application) %>% 
-    mutate(totalCellsForGroup = sum(cells))
+  print(paste0('total full transcriptome rows: ' , nrow(df)))
   
   return(df)
 }
 
-pullTCRResultsFromLabKey <- function(colFilter = NULL){
+doSharedColumnRename <- function(df){
+  names(df)[names(df)=="sortid_stimid_animalid"] <- "AnimalId"
+  df$AnimalId <- as.factor(df$AnimalId)
+  
+  names(df)[names(df)=="sortid_stimid_date"] <- "SampleDate"
+  names(df)[names(df)=="rowid"] <- "DatasetId"
+  
+  names(df)[names(df)=="sortid_cells"] <- "Cells"
+  df$Cells <- as.integer(df$Cells)
+  
+  names(df)[names(df)=="sortid_replicate"] <- "Replicate"
+  df$Replicate <- as.factor(df$Replicate)
+  
+  names(df)[names(df)=="sortid"] <- "SortId"
+  df$SortId <- as.factor(df$SortId)
+  
+  df$IsSingleCell <- df['Cells'] == 1
+  
+  names(df)[names(df)=="sortid_stimid_treatment"] <- "Treatment"
+  df$Treatment <- as.factor(df$Treatment)
+  
+  names(df)[names(df)=="sortid_stimid_stim"] <- "Peptide"
+  df$Peptide <- as.factor(df$Peptide)
+  
+  #names(df)[names(df)=="cellclass"] <- "Cellclass"
+  #df$Cellclass <- as.factor(df$Cellclass)
+  
+  names(df)[names(df)=="sortid_population"] <- "Population"
+  df$Population <- as.factor(df$Population)
+  
+  names(df)[names(df)=="sortid_stimid"] <- "StimId"
+  df$StimId <- as.factor(df$StimId)
+  
+  return(df)
+}
+
+pullTCRResultsFromLabKey <- function(colFilters = NULL){
+  # TODO
+  # colFilter = NULL
+  # if (!is.null(colFilters)){
+  #   print(str(colFilters))
+  #   colFilter = makeFilter(colFilters)
+  #   print(colFilter)
+  # }
+  
   df <- labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
     folderPath="/Internal/Bimber/", 
@@ -104,8 +228,10 @@ pullTCRResultsFromLabKey <- function(colFilter = NULL){
     colSelect=c('sampleName', 'subjectId','date','libraryId','libraryId/label','analysisId', 'analysisId/readset', 'locus','vHit','dHit','jHit','cHit','vGene', 'jGene','CDR3','count','fraction', 'disabled'), 
     containerFilter=NULL,
     colNameOpt='rname',
-    colFilter=colFilter
+    colFilter=colFilters
   )
+  
+  print(paste0('total assay rows (unfiltered): ', nrow(df)))
   
   df <- df[!is.na(df$cdr3),]
   df <- df[is.na(df$disabled),]
@@ -120,67 +246,88 @@ pullTCRResultsFromLabKey <- function(colFilter = NULL){
   
   df$locus <- as.factor(df$locus)
   
+  print(paste0('total assay rows: ', nrow(df)))
+  
   return(df)
 }
 
-pullResultsFromLabKey <- function(resultFilter = NULL){
-  results <- pullTCRResultsFromLabKey(colFilter = resultFilter)  
-  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE)
+pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL){
+  results <- pullTCRResultsFromLabKey(colFilters = resultFilterClauses)
+  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses)
   
-  results <- merge(results, meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId'))
+  results <- merge(results, meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId')) #, all.x=FALSE, all.y=FALSE
+  print(paste0('total merged rows (prefilter): ', nrow(results)))
+
+    #TODO: consider if this is the best approach
+  results$Replicate[results$IsSingleCell] <- c(NA)
+  
+  print(paste0('total merged rows: ', nrow(results)))
+  
+  results <- results %>% 
+    group_by(SeqDataType, StimId, Population, Replicate, IsSingleCell, locus) %>% 
+    mutate(totalCellsForGroupAndLocus = sum(Cells))
+  
+  print(paste0('total merged rows after group: ', nrow(results)))
+  
   results <- qualityFilterResults(results)
   results <- groupSingleCellData(results)
   results <- filterBasedOnCellCount(results)
   
-  return(results)
+  return(list(results=results, meta = meta))
 }
 
-qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000){
-  print(paste0('performing quality filter'))
+qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForEnriched=5000){
+  print(paste0('performing quality filter, initial rows: ', nrow(df)))
   
   r <- nrow(df)
-  df <- df[df$EstimatedLibrarySize > minLibrarySize,]
-  print(paste0('rows dropped for library size: ', (r - nrow(df))))
-  
+  #TODO: restore this
+  #df <- df[df$EstimatedLibrarySize > minLibrarySize,]
+  #print(paste0('rows dropped for library size: ', (r - nrow(df))))
+
   r <- nrow(df)
-  df <- df[df$TotalReads > minReadCount,]
-  print(paste0('rows dropped for read count: ', (r - nrow(df))))
+  df <- df[!(df$SeqDataType == 'Full_Transcriptome' & df$TotalReads < minReadCount),]
+  print(paste0('total RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
+
+  r <- nrow(df)
+  df <- df[!(df$SeqDataType == 'TCR_Enriched' & df$TotalReads < minReadCountForEnriched),]
+  print(paste0('total TCR enriched rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
   
   return(df)
 }
 
 groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 50){
   #print(nrow(df))
+  
   df <- df %>% 
-    group_by(StimId, Population, replicate, Application) %>% 
+    group_by(SeqDataType, StimId, Population, Replicate, IsSingleCell) %>% 
     mutate(totalTcrReadsForGroup = sum(count))
   
   df <- df %>% 
-    group_by(StimId, Population, replicate, Application, locus) %>% 
+    group_by(SeqDataType, StimId, Population, Replicate, IsSingleCell, locus) %>% 
     mutate(totalTcrReadsForGroupAndLocus = sum(count))
 
   #bulk
-  dfb <- df[df$Application != 'RNA-seq, Single Cell',]
+  dfb <- df[!df$IsSingleCell,]
   dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
   dfb$percentageForLocus = dfb$count / dfb$totalTcrReadsForGroupAndLocus
   dfb <- dfb[dfb$totalTcrReadsForGroup >= minTcrReads,]
   dfb$totalCellsForCDR3 <- c(0)
 
-  columns <- c('StimId', 'Population', 'Application', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'date', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Cellclass', 'replicate', 'totalCellsForGroup', 'cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
+  columns <- c('SeqDataType', 'StimId', 'Population', 'IsSingleCell', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'date', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', '', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
   dfb <- dfb[,columns]
   print(paste0('total bulk rows: ', nrow(dfb)))
   
   #single cell
-  dfs <- df[df$Application == 'RNA-seq, Single Cell',]
+  dfs <- df[df$IsSingleCell,]
   print(paste0('starting single cell rows: ', nrow(dfs)))
   dfs <- dfs %>%
-    group_by(StimId, Population, Application, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Cellclass, replicate, totalCellsForGroup) %>%
-    summarize(totalCellsForCDR3 = sum(cells))
-  dfs$cells <- c(1)
+    group_by(SeqDataType, StimId, Population, IsSingleCell, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, , totalCellsForGroup, totalCellsForGroupAndLocus) %>%
+    summarize(totalCellsForCDR3 = sum(Cells))
+  dfs$Cells <- c(1)
   dfs$count <- dfs$totalCellsForCDR3
   
   dfs$percentage <- dfs$totalCellsForCDR3 / dfs$totalCellsForGroup
-  dfs$percentageForLocus <- dfs$totalCellsForCDR3 / dfs$totalCellsForGroup
+  dfs$percentageForLocus <- dfs$totalCellsForCDR3 / dfs$totalCellsForGroupAndLocus
   
   print(paste0('total single cell rows: ', nrow(dfs)))
   
@@ -200,7 +347,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
   }
   
-  df <- df %>% group_by(StimId, Population, replicate, Application) %>% mutate(totalTcrReadsForGroupAfterLowFreq = sum(count)) 
+  df <- df %>% group_by(StimId, Population, Replicate, IsSingleCell) %>% mutate(totalTcrReadsForGroupAfterLowFreq = sum(count)) 
   
   #TODO
   df$percentageAfterLowFreq <- df$count / df$totalTcrReadsForGroupAfterLowFreq
@@ -214,30 +361,29 @@ filterBasedOnCellCount <- function(df = NULL){
   startRows <- nrow(df)
   df$minPctToInclude <- c(0)
   
-  if (length(df$Application == 'RNA-seq, Single Cell') > 0){
-    df$minPctToInclude[df$Application == 'RNA-seq, Single Cell'] <- c(0.1)
-    df$minPctToInclude[df$Application == 'RNA-seq, Single Cell'] <- (1 / df$cells[df$Application == 'RNA-seq, Single Cell']) 
+  if (length(df$IsSingleCell == TRUE) > 0){
+    df$minPctToInclude[df$IsSingleCell] <- c(0.1)
+    df$minPctToInclude[df$IsSingleCell] <- (1 / df$Cells[df$IsSingleCell]) 
   }
 
-    #df <- df[df$percentageForLocus >= df$minPctToInclude | df$percentage >= (df$minPctToInclude / 4),]
-  print(paste0('rows filtered: ', (startRows - nrow(df))))
+  print(paste0('rows filtered by cell count: ', (startRows - nrow(df))))
   
   return(df)
 }
 
-makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FALSE, showLegend = FALSE, yMax=1.05, yField='percentage', xField='Label', fillField='LocusCDR3'){
+makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FALSE, showLegend = FALSE, yMax=1.05, yField='percentage', xField='Label', fillField='LocusCDR3', facetFormula=as.formula(Population ~ dateFormatted)){
   locusData <- df[df$locus == locus,]
   
   if (bulkOnly){
-    locusData <- locusData[locusData$Application == 'RNA-seq',]
+    locusData <- locusData[!locusData$IsSingleCell,]
   }
   
   if (tnfPosOnly){
     locusData <- locusData[locusData$Population == 'TNF-Pos',]
   }
   
-  locusData$LocusCDR3 <- as.factor(as.character(locusData$LocusCDR3))
-  totalCDR3 = length(unique(locusData$LocusCDR3))
+  locusData[fillField] <- as.factor(as.character(locusData[[fillField]]))
+  totalCDR3 = length(unique(locusData[[fillField]]))
   print(paste(locus, ', total CDR3', totalCDR3))
   
   if (nrow(locusData) == 0){
@@ -246,10 +392,10 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   
   getPalette = colorRampPalette(brewer.pal(9, pal))
   
-  colorsDT <-  data.table(LocusCDR3=levels(locusData$LocusCDR3), Color=getPalette(totalCDR3))
+  colorsDT <-  data.table(fillField=levels(locusData[[fillField]]), Color=getPalette(totalCDR3))
   locusData <- data.table(locusData)
-  locusData <- merge(locusData, colorsDT, by = c("LocusCDR3"), all = TRUE)
-  locusData$Color[locusData$LocusCDR3 == 'Low Freq.'] <- c('#D3D3D3')
+  locusData <- merge(locusData, colorsDT, by.x = c(fillField), by.y=c('fillField'), all = TRUE)
+  locusData$Color[locusData[[fillField]] == 'Low Freq.'] <- c('#D3D3D3')
   locusData$Color <- as.factor(locusData$Color)
   
   colorValues <- getPalette(totalCDR3)
@@ -291,7 +437,7 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
     xlab('') +
     labs(title = paste0(locus)) +
     #scales = "free_y"
-    facet_grid(Population ~ dateFormatted, scales = 'fixed') +
+    facet_grid(facetFormula, scales = 'fixed') +
     ylab('')
   
   return(P1)
@@ -316,7 +462,7 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FAL
     suffix = paste0(suffix, '.bulk')
   }
   
-  w <- 1400
+  w <- 1800
   #if (showLegend){
   #  w <- 1800
   #}
@@ -335,7 +481,7 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FAL
   
   if (includeTRB){
     png(paste0(fn,'.TRB.png'), height = 500, width = 700)
-    P_B <- makePlot('TRB', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus')
+    P_B <- makePlot('TRB', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField)
     P_B = P_B + labs(title = paste0(basename, " TRB"))
     print(P_B)
     dev.off()
@@ -343,7 +489,7 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FAL
   
   if (includeTRG){
     png(paste0(fn,'.TRG.png'), height = 500, width = 700)
-    P_G <- makePlot('TRG', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus')
+    P_G <- makePlot('TRG', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField)
     P_G = P_G + labs(title = paste0(basename, " TRG"))
     print(P_G)
     dev.off() 
