@@ -13,8 +13,8 @@ library(data.table)
 
 library(dtplyr)
 
-pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE){
-  df <- rbind(pullFullTranscriptMetaFromLabKey(filterClauses = filterClauses, replicateAsSuffix = replicateAsSuffix), pullEnrichedMetaFromLabKey(filterClauses = filterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix))
+pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE){
+  df <- rbind(pullFullTranscriptMetaFromLabKey(filterClauses = filterClauses, replicateAsSuffix = replicateAsSuffix), pullEnrichedMetaFromLabKey(filterClauses = filterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched))
   
   if (requireGeneFile){
     df <- df[!is.na(df$OutputFileId),]  
@@ -48,7 +48,7 @@ reLevelFactor <- function(f, ordered){
   return(f)
 }
 
-pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE){
+pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE){
   clauses <- list(
     c('enrichedReadsetId', 'NON_BLANK', ''), 
     c('enrichedReadsetId/totalFiles', 'GT', 0)
@@ -114,7 +114,6 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
   }
   
   df$Label[df$IsSingleCell] <- paste0(df$Label[df$IsSingleCell], '**')
-  
   if (separateEnriched){
     df$Label <- paste0(df$Label, "+")
     
@@ -122,7 +121,11 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
   df$Label <- as.factor(df$Label)
   
   print(paste0('total TCR enriched rows: ' , nrow(df)))
-  
+  if (skipEnriched){
+    print('dropping all TCR enriched rows')
+    df <- df[c(FALSE),]  
+  }
+
   
   return(df)
 }
@@ -284,9 +287,9 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   return(df)
 }
 
-pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE){
+pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE){
   results <- pullTCRResultsFromLabKey(colFilterClauses = resultFilterClauses)
-  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix)
+  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched)
   meta$Label <- reorder(meta$Label)
   
   results <- merge(results, meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId')) #, all.x=FALSE, all.y=FALSE
@@ -316,6 +319,9 @@ qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount
   #print(paste0('rows dropped for library size: ', (r - nrow(df))))
 
   r <- nrow(df)
+  #toDrop <- unique(df[!(df$SeqDataType == 'Full_Transcriptome' & df$TotalReads >= minReadCount),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads')])
+  #write.table(toDrop, file = 'toDrop.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+  
   df <- df[!(df$SeqDataType == 'Full_Transcriptome' & df$TotalReads < minReadCount),]
   print(paste0('total RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
@@ -373,6 +379,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   print(paste0('combined: ', nrow(df)))
   
   df <- df %>% group_by(LocusCDR3, AnimalId) %>% mutate(maxPercentageInAnimal = max(percentage)) 
+  df <- df %>% filter(Peptide != 'SEB') %>% group_by(LocusCDR3, AnimalId, Population) %>% mutate(maxPercentageInAnimalPopulation = max(percentage)) 
   df <- df %>% group_by(LocusCDR3, Peptide) %>% mutate(maxPercentageInPeptide = max(percentage)) 
   
   if (lowFreqThreshold){
@@ -409,7 +416,7 @@ filterBasedOnCellCount <- function(df = NULL){
   return(df)
 }
 
-makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FALSE, showLegend = FALSE, yMax=1.05, yField='percentage', xField='Label', fillField='LocusCDR3', facet1 = 'Population', facet2 = 'dateFormatted'){
+makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FALSE, showLegend = FALSE, yMax=1.05, yField='percentage', xField='Label', fillField='LocusCDR3', facet1 = 'Population', facet2 = 'dateFormatted', doFacet=TRUE){
   locusData <- df[df$locus == locus,]
   
   if (bulkOnly){
@@ -440,7 +447,7 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   #colorValues <- rev(colorValues)
   colorValues[[1]] <- '#D3D3D3'  #grey
   
-  facetFormula=as.formula(paste0(facet1, ' ~ ', facet2))
+  facetFormula <- as.formula(paste0(facet1, ' ~ ', facet2))
   
   N <- locusData[, c(facet2, xField), with = FALSE]
   names(N) <- c('GroupField', 'CountField')
@@ -454,7 +461,6 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   N$scaleFactor = N$V1 / max(N$V1)
   
   locusData = merge(locusData, N, by.x = c(facet2), by.y = c(facet2), all.x = TRUE)
-  
   if (showLegend){
     lp = 'right'
   }
@@ -466,7 +472,7 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
     aes_string(x = xField, y = yField, order = 'percentage', width = '0.5*scaleFactor') +
     geom_bar(aes_string(fill = fillField), stat = 'identity', colour="black") +
     scale_fill_manual(values = colorValues) +
-    theme_bw() +
+    theme_bw() +   #base_family = "Arial-Black"
     theme(
       legend.position=lp,
       legend.text=element_text(size=12,color="black"),
@@ -486,18 +492,24 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
     xlab('') +
     labs(title = paste0(locus)) +
     #scales = "free_y"
-    facet_grid(facetFormula, scales = 'free_x') +
     ylab('')
+  
+  if (doFacet){
+    P1 <- P1 + facet_grid(facetFormula, scales = 'free_x')
+  }
   
   return(P1)
 }
 
-makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FALSE, includeTRG=FALSE, pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE){
+makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FALSE, includeTRG=FALSE, pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE, allLocusWidth=1800, singleLocusWidth=1000, asEPS = FALSE, doFacet=TRUE){
   plots = list()
   i = 1
   
+  facet1 <- 'Population'
+  facet2 <- 'dateFormatted'
+
   for (locus in sort(unique(df$locus))){
-    P1 <- makePlot(locus, df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly, yField=yField, xField=xField, fillField=fillField)
+    P1 <- makePlot(locus, df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly, yField=yField, xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
     plots[[i]] <- P1
     i=i+1
   }
@@ -511,11 +523,6 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FAL
     suffix = paste0(suffix, '.tnf')
   }
   
-  w <- 1800
-  #if (showLegend){
-  #  w <- 1800
-  #}
-  
   if (!file.exists(subDir)){
     dir.create(file.path('./', subDir))
   }
@@ -524,23 +531,40 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FAL
   
   write.table(df, file=paste0(fn, '.txt'), sep='\t', row.names = FALSE)
   
-  png(paste0(fn,'.png'), height = 1000, width = w)
+  if (asEPS) {
+    postscript(paste0(fn,'.eps'), height = 1000, width = allLocusWidth)  
+  } else {
+    png(paste0(fn,'.png'), height = 1000, width = allLocusWidth)  
+  }
+  
   do.call(grid.arrange, plots, c(ncol=2))
   dev.off()
   
   if (includeTRB){
-    png(paste0(fn,'.TRB.png'), height = 500, width = 1000)
-    P_B <- makePlot('TRB', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField)
+    if (asEPS) {
+      postscript(paste0(fn,'.TRB.eps'), height = 500, width = singleLocusWidth)
+    } else {
+      png(paste0(fn,'.TRB.png'), height = 500, width = singleLocusWidth)
+    }
+    P_B <- makePlot('TRB', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
     P_B = P_B + labs(title = paste0(basename, " TRB"))
     print(P_B)
     dev.off()
   }
   
   if (includeTRG){
-    png(paste0(fn,'.TRG.png'), height = 500, width = 700)
-    P_G <- makePlot('TRG', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField)
+    if (asEPS) {
+      postscript(paste0(fn,'.TRG.eps'), height = 500, width = singleLocusWidth)
+    } else {
+      png(paste0(fn,'.TRG.png'), height = 500, width = singleLocusWidth)
+    }
+    P_G <- makePlot('TRG', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
     P_G = P_G + labs(title = paste0(basename, " TRG"))
     print(P_G)
     dev.off() 
+  }
+  
+  if (includeTRB){
+    return(P_B)
   }
 }
