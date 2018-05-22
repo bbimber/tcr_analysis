@@ -54,7 +54,7 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
     c('enrichedReadsetId/totalFiles', 'GT', 0)
   )
   
-  if (!is.null(filterClauses)){
+  if (!is.null(filterClauses) && !is.na(filterClauses)){
     clauses = append(clauses, filterClauses)
   }
   
@@ -66,7 +66,7 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
 
   df <- labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
-    folderPath="/Internal/Bimber/", 
+    folderPath="/Labs/Bimber/", 
     schemaName="tcrdb", 
     queryName="cdnas", 
     viewName="", 
@@ -136,7 +136,7 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSu
     c('readsetId/totalFiles', 'GT', 0)
   )
   
-  if (!is.null(filterClauses)){
+  if (!is.null(filterClauses) && !is.na(filterClauses)){
     clauses = append(clauses, filterClauses)
   }
   
@@ -148,7 +148,7 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSu
   
   df <- labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
-    folderPath="/Internal/Bimber/", 
+    folderPath="/Labs/Bimber/", 
     schemaName="tcrdb", 
     queryName="cdnas", 
     viewName="", 
@@ -245,7 +245,7 @@ doSharedColumnRename <- function(df){
 
 pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   colFilter = NULL
-  if (!is.null(colFilterClauses)){
+  if (!is.null(colFilterClauses) && !is.na(colFilterClauses)){
     colFilter = do.call(makeFilter, colFilterClauses)
   }
   
@@ -257,7 +257,7 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   
   df <- labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
-    folderPath="/Internal/Bimber/", 
+    folderPath="/Labs/Bimber/", 
     schemaName="assay.TCRdb.TCRdb", 
     queryName="Data", 
     viewName="", 
@@ -297,20 +297,22 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
 
   print(paste0('total merged rows: ', nrow(results)))
   
+  results <- qualityFilterResults(results)
+  print(paste0('total rows after quality filter: ', nrow(results)))
+  
   results <- results %>% 
     group_by(SeqDataType, StimId, Population, Replicate, IsSingleCell, locus) %>% 
-    mutate(totalCellsForGroupAndLocus = sum(Cells))
+    mutate(totalCellsForGroupAndLocusBulk = sum(Cells), totalCellsForGroupAndLocusSS = n_distinct(analysisid))
   
   print(paste0('total merged rows after group: ', nrow(results)))
   
-  results <- qualityFilterResults(results)
   results <- groupSingleCellData(results)
   results <- filterBasedOnCellCount(results)
   
   return(list(results=results, meta = meta))
 }
 
-qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForEnriched=5000){
+qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForSingle=250000, minReadCountForEnriched=5000){
   print(paste0('performing quality filter, initial rows: ', nrow(df)))
   
   r <- nrow(df)
@@ -322,8 +324,11 @@ qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount
   #toDrop <- unique(df[!(df$SeqDataType == 'Full_Transcriptome' & df$TotalReads >= minReadCount),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads')])
   #write.table(toDrop, file = 'toDrop.txt', sep = '\t', row.names = FALSE, quote = FALSE)
   
-  df <- df[!(df$SeqDataType == 'Full_Transcriptome' & df$TotalReads < minReadCount),]
-  print(paste0('total RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
+  df <- df[!(df$SeqDataType == 'Full_Transcriptome' & !df$IsSingleCell & df$TotalReads < minReadCount),]
+  print(paste0('total bulk RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
+
+  df <- df[!(df$SeqDataType == 'Full_Transcriptome' & df$IsSingleCell & df$TotalReads < minReadCountForSingle),]
+  print(paste0('total single cell RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
   r <- nrow(df)
   df <- df[!(df$SeqDataType == 'TCR_Enriched' & df$TotalReads < minReadCountForEnriched),]
@@ -332,7 +337,7 @@ qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount
   return(df)
 }
 
-groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 50){
+groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 50, backgroundThreshold = 0.5){
   #print(nrow(df))
   
   df <- df %>% 
@@ -345,6 +350,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
 
   #bulk
   dfb <- df[!df$IsSingleCell,]
+  dfb$totalCellsForGroupAndLocus <- dfb$totalCellsForGroupAndLocusBulk
   dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
   dfb$percentageForLocus = dfb$count / dfb$totalTcrReadsForGroupAndLocus
   dfb <- dfb[dfb$totalTcrReadsForGroup >= minTcrReads,]
@@ -357,6 +363,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   dfs <- df[df$IsSingleCell,]
   print(paste0('starting single cell rows: ', nrow(dfs)))
   if (nrow(dfs) > 0){
+    dfs$totalCellsForGroupAndLocus <- dfs$totalCellsForGroupAndLocusSS
     dfs <- dfs %>%
       group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus) %>%
       summarize(totalCellsForCDR3 = sum(Cells))
@@ -381,6 +388,36 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   df <- df %>% group_by(LocusCDR3, AnimalId) %>% mutate(maxPercentageInAnimal = max(percentage)) 
   df <- df %>% filter(Peptide != 'SEB') %>% group_by(LocusCDR3, AnimalId, Population) %>% mutate(maxPercentageInAnimalPopulation = max(percentage)) 
   df <- df %>% group_by(LocusCDR3, Peptide) %>% mutate(maxPercentageInPeptide = max(percentage)) 
+
+  #track the highest frequency in a matched negative sample:
+  negativePopulations <- list(
+    c('TNF-Neg', 'TNF-Pos'), 
+    c('Tetramer-Neg', 'Tetramer-Pos'),
+    c('Tet-', 'Tet+')
+  )
+  
+  negativePopulationNames <- character()
+  for (pops in negativePopulations) {
+    negativePopulationNames <- append(negativePopulationNames, pops[[1]])
+  }
+  
+  negdf <- df %>% filter(Population %in% negativePopulationNames) %>% group_by(LocusCDR3, StimId, Population) %>% summarize(maxPercentageInMatchedNeg = max(percentage)) 
+  for (pops in negativePopulations) {
+    p1 <- pops[[1]]
+    p2 <- pops[[2]]
+    negdf$Population <- as.character(negdf$Population)
+    negdf$Population[negdf$Population == p1] <- c(p2)
+    negdf$Population <- as.factor(negdf$Population)
+  }
+  
+  df <- merge(df, negdf[c('LocusCDR3', 'StimId', 'Population', 'maxPercentageInMatchedNeg')], by = c('LocusCDR3', 'StimId', 'Population'), all.x = TRUE, suffix = c("", ""))
+
+  df$ratioToBackground <- c(0)
+  if (length(df$ratioToBackground[!is.na(df$maxPercentageInMatchedNeg)]) > 0){
+    df$ratioToBackground[!is.na(df$maxPercentageInMatchedNeg)] <- (df$maxPercentageInMatchedNeg[!is.na(df$maxPercentageInMatchedNeg)] / df$percentage[!is.na(df$maxPercentageInMatchedNeg)])  
+  } else {
+    print(paste0('no rows have a match negative sample'))
+  }
   
   if (lowFreqThreshold){
     df$LocusCDR3 <- as.character(df$LocusCDR3)
@@ -389,6 +426,21 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     
     df$LocusCDR3WithUsage <- as.character(df$LocusCDR3WithUsage)
     df$LocusCDR3WithUsage[df$maxPercentageInAnimal < lowFreqThreshold] <- c('Low Freq.')
+    df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
+  }
+  
+  if (backgroundThreshold){
+    total <- length(df$LocusCDR3[df$ratioToBackground > backgroundThreshold])
+    if (total > 0){
+      print(paste0('total filtered due to high background: ', total))  
+    }
+    
+    df$LocusCDR3 <- as.character(df$LocusCDR3)
+    df$LocusCDR3[df$ratioToBackground > backgroundThreshold] <- c('Background')
+    df$LocusCDR3 <- as.factor(df$LocusCDR3)
+    
+    df$LocusCDR3WithUsage <- as.character(df$LocusCDR3WithUsage)
+    df$LocusCDR3WithUsage[df$ratioToBackground > backgroundThreshold] <- c('Background')
     df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
   }
   
@@ -441,26 +493,41 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   locusData <- data.table(locusData)
   locusData <- merge(locusData, colorsDT, by.x = c(fillField), by.y=c('fillField'), all = TRUE)
   locusData$Color[locusData[[fillField]] == 'Low Freq.'] <- c('#D3D3D3')
+  locusData$Color[locusData[[fillField]] == 'Background'] <- c('#000000')
   locusData$Color <- as.factor(locusData$Color)
   
   colorValues <- getPalette(totalCDR3)
   #colorValues <- rev(colorValues)
-  colorValues[[1]] <- '#D3D3D3'  #grey
   
-  facetFormula <- as.formula(paste0(facet1, ' ~ ', facet2))
+  idx <- 1
+  if ('Background' %in% locusData[[fillField]]) {
+    colorValues[[idx]] <- '#000000'  #black
+    idx <- 2 
+  }
   
-  N <- locusData[, c(facet2, xField), with = FALSE]
-  names(N) <- c('GroupField', 'CountField')
 
-  N <- N %>% 
-    group_by(GroupField) %>% 
-    summarise(V1 = n_distinct(CountField))
+  if ('Low Freq.' %in% locusData[[fillField]]) {
+    colorValues[[idx]] <- '#D3D3D3'  #grey  
+  }
   
-  names(N) <- c(facet2, 'V1')
+  if (doFacet){
+    N <- locusData[, c(facet2, xField), with = FALSE]
+    names(N) <- c('GroupField', 'CountField')
+    
+    N <- N %>% 
+      group_by(GroupField) %>% 
+      summarise(V1 = n_distinct(CountField))
+    
+    names(N) <- c(facet2, 'V1')
+    
+    N$scaleFactor = N$V1 / max(N$V1)
+    locusData = merge(locusData, N, by.x = c(facet2), by.y = c(facet2), all.x = TRUE)
+    widthStr <- '0.5*scaleFactor'
+  } else {
+    locusData$scaleFactor <- c(1)
+    widthStr <- '0.5'
+  }
   
-  N$scaleFactor = N$V1 / max(N$V1)
-  
-  locusData = merge(locusData, N, by.x = c(facet2), by.y = c(facet2), all.x = TRUE)
   if (showLegend){
     lp = 'right'
   }
@@ -469,7 +536,7 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   }
   
   P1<-ggplot(locusData) +
-    aes_string(x = xField, y = yField, order = 'percentage', width = '0.5*scaleFactor') +
+    aes_string(x = xField, y = yField, order = 'percentage', width = widthStr) +
     geom_bar(aes_string(fill = fillField), stat = 'identity', colour="black") +
     scale_fill_manual(values = colorValues) +
     theme_bw() +   #base_family = "Arial-Black"
@@ -495,13 +562,14 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
     ylab('')
   
   if (doFacet){
+    facetFormula <- as.formula(paste0(facet1, ' ~ ', facet2))
     P1 <- P1 + facet_grid(facetFormula, scales = 'free_x')
   }
   
   return(P1)
 }
 
-makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FALSE, includeTRG=FALSE, pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE, allLocusWidth=1800, singleLocusWidth=1000, asEPS = FALSE, doFacet=TRUE){
+makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, locusPlots = c('TRB'), pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE, allLocusWidth=1800, singleLocusWidth=1000, asEPS = FALSE, doFacet=TRUE){
   plots = list()
   i = 1
   
@@ -540,31 +608,22 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, includeTRB=FAL
   do.call(grid.arrange, plots, c(ncol=2))
   dev.off()
   
-  if (includeTRB){
+  returnPlots <- list()
+  for (locus in locusPlots){
+    print(paste0('Making plot for locus: ', locus))
     if (asEPS) {
-      postscript(paste0(fn,'.TRB.eps'), height = 500, width = singleLocusWidth)
+      postscript(paste0(fn,'.',locus,'.eps'), height = 500, width = singleLocusWidth)
     } else {
-      png(paste0(fn,'.TRB.png'), height = 500, width = singleLocusWidth)
+      png(paste0(fn,'.', locus, '.png'), height = 500, width = singleLocusWidth)
     }
-    P_B <- makePlot('TRB', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
-    P_B = P_B + labs(title = paste0(basename, " TRB"))
+    
+    P_B <- makePlot(locus, df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
+    P_B = P_B + labs(title = paste0(basename, " ", locus))
     print(P_B)
     dev.off()
+    
+    returnPlots <- append(returnPlots, P_B)
   }
-  
-  if (includeTRG){
-    if (asEPS) {
-      postscript(paste0(fn,'.TRG.eps'), height = 500, width = singleLocusWidth)
-    } else {
-      png(paste0(fn,'.TRG.png'), height = 500, width = singleLocusWidth)
-    }
-    P_G <- makePlot('TRG', df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
-    P_G = P_G + labs(title = paste0(basename, " TRG"))
-    print(P_G)
-    dev.off() 
-  }
-  
-  if (includeTRB){
-    return(P_B)
-  }
+
+  return(returnPlots)
 }
