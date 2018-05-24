@@ -305,7 +305,7 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
     mutate(totalCellsForGroupAndLocusBulk = sum(Cells), totalCellsForGroupAndLocusSS = n_distinct(analysisid))
   
   print(paste0('total merged rows after group: ', nrow(results)))
-  
+
   results <- groupSingleCellData(results)
   results <- filterBasedOnCellCount(results)
   
@@ -315,18 +315,20 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
 qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForSingle=250000, minReadCountForEnriched=5000){
   print(paste0('performing quality filter, initial rows: ', nrow(df)))
   
-  r <- nrow(df)
   #TODO: restore this
+  #r <- nrow(df)
   #df <- df[df$EstimatedLibrarySize > minLibrarySize,]
   #print(paste0('rows dropped for library size: ', (r - nrow(df))))
 
-  r <- nrow(df)
+  #r <- nrow(df)
   #toDrop <- unique(df[!(df$SeqDataType == 'Full_Transcriptome' & df$TotalReads >= minReadCount),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads')])
   #write.table(toDrop, file = 'toDrop.txt', sep = '\t', row.names = FALSE, quote = FALSE)
   
+  r <- nrow(df)
   df <- df[!(df$SeqDataType == 'Full_Transcriptome' & !df$IsSingleCell & df$TotalReads < minReadCount),]
   print(paste0('total bulk RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
+  r <- nrow(df)
   df <- df[!(df$SeqDataType == 'Full_Transcriptome' & df$IsSingleCell & df$TotalReads < minReadCountForSingle),]
   print(paste0('total single cell RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
@@ -353,7 +355,10 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   dfb$totalCellsForGroupAndLocus <- dfb$totalCellsForGroupAndLocusBulk
   dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
   dfb$percentageForLocus = dfb$count / dfb$totalTcrReadsForGroupAndLocus
+  r <- nrow(dfb)
   dfb <- dfb[dfb$totalTcrReadsForGroup >= minTcrReads,]
+  print(paste0('total bulk rows filtered due to low TCR reads: ', (r - nrow(dfb))))
+  
   dfb$totalCellsForCDR3 <- c(0)
   columns <- c('SeqDataType', 'StimId', 'Population', 'IsSingleCell', 'Label', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'date', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Replicate', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
   dfb <- dfb[,columns]
@@ -378,15 +383,16 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     dfs$count <- dfs$totalCellsForCDR3
     dfs$percentage <- numeric()
     dfs$percentageForLocus <- numeric()
+    dfs$totalCellsForGroupAndLocus <- integer()
   }
   
   print(paste0('total single cell rows: ', nrow(dfs)))
   
   df <- rbind(dfb[columns], dfs[columns])
   print(paste0('combined: ', nrow(df)))
-  
+
   df <- df %>% group_by(LocusCDR3, AnimalId) %>% mutate(maxPercentageInAnimal = max(percentage)) 
-  df <- df %>% filter(Peptide != 'SEB') %>% group_by(LocusCDR3, AnimalId, Population) %>% mutate(maxPercentageInAnimalPopulation = max(percentage)) 
+  #df <- df %>% filter(Peptide != 'SEB') %>% group_by(LocusCDR3, AnimalId, Population) %>% mutate(maxPercentageInAnimalPopulation = max(percentage)) 
   df <- df %>% group_by(LocusCDR3, Peptide) %>% mutate(maxPercentageInPeptide = max(percentage)) 
 
   #track the highest frequency in a matched negative sample:
@@ -432,13 +438,13 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   if (backgroundThreshold){
     total <- length(df$LocusCDR3[df$ratioToBackground > backgroundThreshold])
     if (total > 0){
-      print(paste0('total filtered due to high background: ', total))  
+      print(paste0('total filtered due to high background: ', total))
     }
-    
+
     df$LocusCDR3 <- as.character(df$LocusCDR3)
     df$LocusCDR3[df$ratioToBackground > backgroundThreshold] <- c('Background')
     df$LocusCDR3 <- as.factor(df$LocusCDR3)
-    
+
     df$LocusCDR3WithUsage <- as.character(df$LocusCDR3WithUsage)
     df$LocusCDR3WithUsage[df$ratioToBackground > backgroundThreshold] <- c('Background')
     df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
