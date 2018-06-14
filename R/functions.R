@@ -13,8 +13,8 @@ library(data.table)
 
 library(dtplyr)
 
-pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE){
-  df <- rbind(pullFullTranscriptMetaFromLabKey(filterClauses = filterClauses, replicateAsSuffix = replicateAsSuffix), pullEnrichedMetaFromLabKey(filterClauses = filterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched))
+pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE){
+  df <- rbind(pullFullTranscriptMetaFromLabKey(filterClauses = filterClauses, replicateAsSuffix = replicateAsSuffix, collapseReplicates = collapseReplicates), pullEnrichedMetaFromLabKey(filterClauses = filterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, collapseReplicates = collapseReplicates, skipEnriched = skipEnriched))
   
   if (requireGeneFile){
     df <- df[!is.na(df$OutputFileId),]  
@@ -48,7 +48,7 @@ reLevelFactor <- function(f, ordered){
   return(f)
 }
 
-pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE){
+pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE){
   clauses <- list(
     c('enrichedReadsetId', 'NON_BLANK', ''), 
     c('enrichedReadsetId/totalFiles', 'GT', 0)
@@ -109,7 +109,10 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
   
   df$Label <- as.character(df$Peptide)
   
-  if (replicateAsSuffix){
+  if (collapseReplicates){
+    replicateAsSuffix <- FALSE
+    df$Replicate <- c(NA)
+  } else if (replicateAsSuffix){
     df$Label[!is.na(df$Replicate)] <- paste0(df$Label[!is.na(df$Replicate)], '_', df$Replicate[!is.na(df$Replicate)])  
   }
   
@@ -130,7 +133,7 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
   return(df)
 }
 
-pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSuffix = TRUE){
+pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSuffix = TRUE, collapseReplicates = FALSE){
   clauses = list(
     c('readsetId', 'NON_BLANK', ''), 
     c('readsetId/totalFiles', 'GT', 0)
@@ -191,7 +194,10 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSu
   
   df$Label <- as.character(df$Peptide)
   
-  if (replicateAsSuffix){
+  if (collapseReplicates){
+    replicateAsSuffix <- FALSE
+    df$Replicate <- c(NA)
+  } else if (replicateAsSuffix){
     df$Label[!is.na(df$Replicate)] <- paste0(df$Label[!is.na(df$Replicate)], '_', df$Replicate[!is.na(df$Replicate)])  
   }
   
@@ -287,9 +293,9 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   return(df)
 }
 
-pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE){
+pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE, lowFreqThreshold = 0.05){
   results <- pullTCRResultsFromLabKey(colFilterClauses = resultFilterClauses)
-  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched)
+  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched, collapseReplicates = collapseReplicates)
   meta$Label <- reorder(meta$Label)
   
   results <- merge(results, meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId')) #, all.x=FALSE, all.y=FALSE
@@ -306,7 +312,7 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
   
   print(paste0('total merged rows after group: ', nrow(results)))
 
-  results <- groupSingleCellData(results)
+  results <- groupSingleCellData(results, lowFreqThreshold = lowFreqThreshold)
   results <- filterBasedOnCellCount(results)
   
   return(list(results=results, meta = meta))
@@ -353,7 +359,13 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   #bulk
   dfb <- df[!df$IsSingleCell,]
   dfb$totalCellsForGroupAndLocus <- dfb$totalCellsForGroupAndLocusBulk
-  dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
+
+  #this allows replicates to collapse:
+  dfb <- dfb %>%
+    group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus, totalTcrReadsForGroup, totalTcrReadsForGroupAndLocus, Cells) %>%
+    summarize(count = sum(count))
+
+    dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
   dfb$percentageForLocus = dfb$count / dfb$totalTcrReadsForGroupAndLocus
   r <- nrow(dfb)
   dfb <- dfb[dfb$totalTcrReadsForGroup >= minTcrReads,]
@@ -361,7 +373,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   
   dfb$totalCellsForCDR3 <- c(0)
   columns <- c('SeqDataType', 'StimId', 'Population', 'IsSingleCell', 'Label', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'date', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Replicate', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
-  dfb <- dfb[,columns]
+  dfb <- as.data.frame(dfb[,columns])
   print(paste0('total bulk rows: ', nrow(dfb)))
   
   #single cell
@@ -385,8 +397,10 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     dfs$percentageForLocus <- numeric()
     dfs$totalCellsForGroupAndLocus <- integer()
   }
+  dfs <- as.data.frame(dfs[,columns])
   
   print(paste0('total single cell rows: ', nrow(dfs)))
+  
   
   df <- rbind(dfb[columns], dfs[columns])
   print(paste0('combined: ', nrow(df)))
@@ -494,28 +508,28 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   }
   
   getPalette = colorRampPalette(brewer.pal(9, pal))
-  
-  colorsDT <-  data.table(fillField=levels(locusData[[fillField]]), Color=getPalette(totalCDR3))
+  #colorsDT <-  data.table(fillField=levels(locusData[[fillField]]), Color=getPalette(totalCDR3))
   locusData <- data.table(locusData)
-  locusData <- merge(locusData, colorsDT, by.x = c(fillField), by.y=c('fillField'), all = TRUE)
-  locusData$Color[locusData[[fillField]] == 'Low Freq.'] <- c('#D3D3D3')
-  locusData$Color[locusData[[fillField]] == 'Background'] <- c('#000000')
-  locusData$Color <- as.factor(locusData$Color)
+  #locusData <- merge(locusData, colorsDT, by.x = c(fillField), by.y=c('fillField'), all = TRUE)
+  #locusData$Color[locusData[[fillField]] == 'Low Freq.'] <- c('#D3D3D3')
+  #locusData$Color[locusData[[fillField]] == 'Background'] <- c('#000000')
+  #locusData$Color <- as.factor(locusData$Color)
   
-  colorValues <- getPalette(totalCDR3)
-  #colorValues <- rev(colorValues)
-  
-  idx <- 1
+  extraColors <- character()
   if ('Background' %in% locusData[[fillField]]) {
-    colorValues[[idx]] <- '#000000'  #black
-    idx <- 2 
+    extraColors <- c(extraColors, '#000000')  #black
   }
   
 
   if ('Low Freq.' %in% locusData[[fillField]]) {
-    colorValues[[idx]] <- '#D3D3D3'  #grey  
+    extraColors <- c(extraColors, '#D3D3D3')  #grey  
   }
   
+  colorValues <- getPalette(totalCDR3 - length(extraColors))
+  colorValues <- c(extraColors, colorValues)
+  #colorValues <- rev(colorValues)
+  
+
   if (doFacet){
     N <- locusData[, c(facet2, xField), with = FALSE]
     names(N) <- c('GroupField', 'CountField')
