@@ -10,6 +10,8 @@ library(scales)
 library(RColorBrewer)
 library(gridExtra)
 library(data.table)
+library(naturalsort)
+library(stringi)
 
 library(dtplyr)
 
@@ -104,24 +106,32 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
   names(df)[names(df)=="enrichedreadsetid_status"] <- "Status"
   df$Status <- as.factor(df$Status)
   
-  df$SeqDataType <- 'TCR_Enriched'
+  if (nrow(df) == 0){
+    df$SeqDataType <- character()
+  } else {
+    df$SeqDataType <- c('TCR_Enriched')
+  }
+   
   df$SeqDataType <- as.factor(df$SeqDataType)
   
   df$Label <- as.character(df$Peptide)
   
-  if (collapseReplicates){
+  if (nrow(df)> 0 && collapseReplicates){
     replicateAsSuffix <- FALSE
     df$Replicate <- c(NA)
   } else if (replicateAsSuffix){
     df$Label[!is.na(df$Replicate)] <- paste0(df$Label[!is.na(df$Replicate)], '_', df$Replicate[!is.na(df$Replicate)])  
   }
   
-  df$Label[df$IsSingleCell] <- paste0(df$Label[df$IsSingleCell], '**')
-  if (separateEnriched){
-    df$Label <- paste0(df$Label, "+")
-    
+  if (nrow(df) > 0) {
+    df$Label[df$IsSingleCell] <- paste0(df$Label[df$IsSingleCell], '**')
+    if (separateEnriched){
+      df$Label <- paste0(df$Label, "+")
+      
+    }
   }
-  df$Label <- as.factor(df$Label)
+  
+  df$Label <- naturalfactor(df$Label)
   
   print(paste0('total TCR enriched rows: ' , nrow(df)))
   if (skipEnriched){
@@ -192,6 +202,8 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSu
   df$SeqDataType <- 'Full_Transcriptome'
   df$SeqDataType <- as.factor(df$SeqDataType)
   
+  df$Peptide <- naturalfactor(df$Peptide)
+  
   df$Label <- as.character(df$Peptide)
   
   if (collapseReplicates){
@@ -203,7 +215,7 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSu
   
   df$Label[df$IsSingleCell] <- paste0(df$Label[df$IsSingleCell], '**')
   
-  df$Label <- as.factor(df$Label)
+  df$Label <- naturalfactor(df$Label)
   
   print(paste0('total full transcriptome rows: ' , nrow(df)))
   
@@ -226,7 +238,12 @@ doSharedColumnRename <- function(df){
   names(df)[names(df)=="sortid"] <- "SortId"
   df$SortId <- as.factor(df$SortId)
   
-  df$IsSingleCell <- df['Cells'] == 1
+  if (nrow(df) == 0) {
+    df$IsSingleCell <- logical()
+  } else {
+    df$IsSingleCell <- df['Cells'] == 1  
+  }
+  
   
   #TODO: consider if this is the best approach
   df$Replicate[df$IsSingleCell] <- c(NA)
@@ -235,13 +252,13 @@ doSharedColumnRename <- function(df){
   df$Treatment <- as.factor(df$Treatment)
   
   names(df)[names(df)=="sortid_stimid_stim"] <- "Peptide"
-  df$Peptide <- as.factor(df$Peptide)
+  df$Peptide <- naturalfactor(df$Peptide)
   
   #names(df)[names(df)=="cellclass"] <- "Cellclass"
   #df$Cellclass <- as.factor(df$Cellclass)
   
   names(df)[names(df)=="sortid_population"] <- "Population"
-  df$Population <- as.factor(df$Population)
+  df$Population <- naturalfactor(df$Population)
   
   names(df)[names(df)=="sortid_stimid"] <- "StimId"
   df$StimId <- as.factor(df$StimId)
@@ -293,7 +310,7 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   return(df)
 }
 
-pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE, lowFreqThreshold = 0.05){
+pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE, lowFreqThreshold = 0.05, backgroundThreshold = 0.5){
   results <- pullTCRResultsFromLabKey(colFilterClauses = resultFilterClauses)
   meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched, collapseReplicates = collapseReplicates)
   meta$Label <- reorder(meta$Label)
@@ -310,15 +327,45 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
     group_by(SeqDataType, StimId, Population, Replicate, IsSingleCell, locus) %>% 
     mutate(totalCellsForGroupAndLocusBulk = sum(Cells), totalCellsForGroupAndLocusSS = n_distinct(analysisid))
   
+  results <- results %>% 
+    group_by(SeqDataType, StimId, Population, Replicate, IsSingleCell, locus, analysisid) %>% 
+    mutate(totalCDR3ForCellAndLocus = n())
+  
   print(paste0('total merged rows after group: ', nrow(results)))
 
-  results <- groupSingleCellData(results, lowFreqThreshold = lowFreqThreshold)
+  results <- groupSingleCellData(results, lowFreqThreshold = lowFreqThreshold, backgroundThreshold = backgroundThreshold)
   results <- filterBasedOnCellCount(results)
+  
+  # Add clone names:
+  labelDf <- labkey.selectRows(
+    baseUrl="https://prime-seq.ohsu.edu", 
+    folderPath="/Labs/Bimber/", 
+    schemaName="tcrdb", 
+    queryName="clones", 
+    viewName="", 
+    showHidden=TRUE,
+    colSelect=c('cloneName','chain','cdr3','animals'),
+    containerFilter=NULL,
+    colNameOpt='rname'
+  )
+  colnames(labelDf)[colnames(labelDf)=="chain"] <- "locus"
+  
+  labelDf$LabelCol <- paste0(labelDf$clonename)
+  
+  labelsGroup <- labelDf %>% 
+    group_by(locus, cdr3) %>% 
+    summarize(CloneName = toString(sort(unique(LabelCol))))
+  
+  results <- merge(results, labelsGroup, by.x = c('locus', 'cdr3'), by.y = c('locus', 'cdr3'), all.x = TRUE, all.y = FALSE)
+  
+  results$LocusCDR3 <- as.character(results$LocusCDR3)
+  results$LocusCDR3[!is.na(results$CloneName) & !results$IsFiltered] <- results$CloneName[!is.na(results$CloneName) & !results$IsFiltered]
+  results$LocusCDR3 <- as.factor(results$LocusCDR3)
   
   return(list(results=results, meta = meta))
 }
 
-qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForSingle=250000, minReadCountForEnriched=5000){
+qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForSingle=150000, minReadCountForEnriched=5000){
   print(paste0('performing quality filter, initial rows: ', nrow(df)))
   
   #TODO: restore this
@@ -327,14 +374,17 @@ qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount
   #print(paste0('rows dropped for library size: ', (r - nrow(df))))
 
   #r <- nrow(df)
-  #toDrop <- unique(df[!(df$SeqDataType == 'Full_Transcriptome' & df$TotalReads >= minReadCount),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads')])
-  #write.table(toDrop, file = 'toDrop.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+  toDrop <- unique(df[(df$SeqDataType == 'Full_Transcriptome' & !df$IsSingleCell & df$TotalReads < minReadCount),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads', 'IsSingleCell')])
+  write.table(toDrop, file = 'DropForReadCount.txt', sep = '\t', row.names = FALSE, quote = FALSE)
   
   r <- nrow(df)
   df <- df[!(df$SeqDataType == 'Full_Transcriptome' & !df$IsSingleCell & df$TotalReads < minReadCount),]
   print(paste0('total bulk RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
   r <- nrow(df)
+  toDrop <- unique(df[(df$SeqDataType == 'Full_Transcriptome' & df$IsSingleCell & df$TotalReads < minReadCountForSingle),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads', 'IsSingleCell')])
+  write.table(toDrop, file = 'DropForReadCountSS.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+
   df <- df[!(df$SeqDataType == 'Full_Transcriptome' & df$IsSingleCell & df$TotalReads < minReadCountForSingle),]
   print(paste0('total single cell RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
@@ -345,7 +395,7 @@ qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount
   return(df)
 }
 
-groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 50, backgroundThreshold = 0.5){
+groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 50, backgroundThreshold = 0.5, expandThreshold = 8){
   #print(nrow(df))
   
   df <- df %>% 
@@ -381,9 +431,11 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   print(paste0('starting single cell rows: ', nrow(dfs)))
   if (nrow(dfs) > 0){
     dfs$totalCellsForGroupAndLocus <- dfs$totalCellsForGroupAndLocusSS
+    dfs$ScaledCells <- dfs$Cells / dfs$totalCDR3ForCellAndLocus
+    
     dfs <- dfs %>%
       group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus) %>%
-      summarize(totalCellsForCDR3 = sum(Cells))
+      summarize(totalCellsForCDR3 = sum(ScaledCells))
     dfs$Cells <- c(1)
     dfs$count <- dfs$totalCellsForCDR3
     
@@ -432,6 +484,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   
   df <- merge(df, negdf[c('LocusCDR3', 'StimId', 'Population', 'maxPercentageInMatchedNeg')], by = c('LocusCDR3', 'StimId', 'Population'), all.x = TRUE, suffix = c("", ""))
 
+  df$IsFiltered <- c(FALSE)
   df$ratioToBackground <- c(0)
   if (length(df$ratioToBackground[!is.na(df$maxPercentageInMatchedNeg)]) > 0){
     df$ratioToBackground[!is.na(df$maxPercentageInMatchedNeg)] <- (df$maxPercentageInMatchedNeg[!is.na(df$maxPercentageInMatchedNeg)] / df$percentage[!is.na(df$maxPercentageInMatchedNeg)])  
@@ -443,13 +496,14 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     df$LocusCDR3 <- as.character(df$LocusCDR3)
     df$LocusCDR3[df$maxPercentageInAnimal < lowFreqThreshold] <- c('Low Freq.')
     df$LocusCDR3 <- as.factor(df$LocusCDR3)
+    df$IsFiltered[df$maxPercentageInAnimal < lowFreqThreshold] <- c(TRUE)
     
     df$LocusCDR3WithUsage <- as.character(df$LocusCDR3WithUsage)
     df$LocusCDR3WithUsage[df$maxPercentageInAnimal < lowFreqThreshold] <- c('Low Freq.')
     df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
   }
   
-  if (backgroundThreshold){
+  if (!is.na(backgroundThreshold)){
     total <- length(df$LocusCDR3[df$ratioToBackground > backgroundThreshold])
     if (total > 0){
       print(paste0('total filtered due to high background: ', total))
@@ -458,9 +512,29 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     df$LocusCDR3 <- as.character(df$LocusCDR3)
     df$LocusCDR3[df$ratioToBackground > backgroundThreshold] <- c('Background')
     df$LocusCDR3 <- as.factor(df$LocusCDR3)
+    df$IsFiltered[df$ratioToBackground > backgroundThreshold] <- c(TRUE)
 
     df$LocusCDR3WithUsage <- as.character(df$LocusCDR3WithUsage)
     df$LocusCDR3WithUsage[df$ratioToBackground > backgroundThreshold] <- c('Background')
+    df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
+  }
+  
+  if (expandThreshold) {
+    df$ExpandThreshold <- df$percentageForLocus / df$percentage
+    
+    total <- length(df$LocusCDR3[df$ExpandThreshold > expandThreshold])
+    if (total > 0){
+      print(paste0('total filtered due to low reads in locus: ', total))
+      print(paste0('max expand: ', max(df$ExpandThreshold)))
+    }
+    
+    df$LocusCDR3 <- as.character(df$LocusCDR3)
+    df$LocusCDR3[df$ExpandThreshold > expandThreshold] <- c('Low Reads for Locus')
+    df$LocusCDR3 <- as.factor(df$LocusCDR3)
+    df$IsFiltered[df$ExpandThreshold > expandThreshold] <- c(TRUE)
+    
+    df$LocusCDR3WithUsage <- as.character(df$LocusCDR3WithUsage)
+    df$LocusCDR3WithUsage[df$ExpandThreshold > expandThreshold] <- c('Low Reads for Locus')
     df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
   }
   
@@ -488,8 +562,13 @@ filterBasedOnCellCount <- function(df = NULL){
   return(df)
 }
 
-makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FALSE, showLegend = FALSE, yMax=1.05, yField='percentage', xField='Label', fillField='LocusCDR3', facet1 = 'Population', facet2 = 'dateFormatted', doFacet=TRUE){
+makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FALSE, showLegend = FALSE, yMax=1.05, yField='percentage', xField='Label', fillField='LocusCDR3', facet1 = 'Population', facet2 = 'dateFormatted', doFacet=TRUE, lowFreqThreshold = 0.05){
   locusData <- df[df$locus == locus,]
+  if (lowFreqThreshold){
+    locusData[[fillField]] <- as.character(locusData[[fillField]])
+    locusData[[fillField]][locusData[[yField]] < lowFreqThreshold] <- c('Low Freq.')
+    locusData[[fillField]] <- naturalfactor(locusData[[fillField]])
+  }
   
   if (bulkOnly){
     locusData <- locusData[!locusData$IsSingleCell,]
@@ -499,7 +578,7 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
     locusData <- locusData[locusData$Population == 'TNF-Pos',]
   }
   
-  locusData[fillField] <- as.factor(as.character(locusData[[fillField]]))
+  locusData[fillField] <- naturalfactor(as.character(locusData[[fillField]]))
   totalCDR3 = length(unique(locusData[[fillField]]))
   print(paste(locus, ', total CDR3', totalCDR3))
   
@@ -523,6 +602,10 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
 
   if ('Low Freq.' %in% locusData[[fillField]]) {
     extraColors <- c(extraColors, '#D3D3D3')  #grey  
+  }
+  
+  if ('Low Reads for Locus' %in% locusData[[fillField]]) {
+    extraColors <- c(extraColors, '#808080')  #grey  
   }
   
   colorValues <- getPalette(totalCDR3 - length(extraColors))
@@ -589,12 +672,9 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   return(P1)
 }
 
-makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, locusPlots = c('TRB'), pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE, allLocusWidth=1800, singleLocusWidth=1000, asEPS = FALSE, doFacet=TRUE){
+makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, locusPlots = c('TRB'), pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE, allLocusWidth=1800, singleLocusWidth=1000, singleLocusHeight=500, asEPS = FALSE, doFacet=TRUE, facet1 = 'Population', facet2 = 'dateFormatted'){
   plots = list()
   i = 1
-  
-  facet1 <- 'Population'
-  facet2 <- 'dateFormatted'
 
   for (locus in sort(unique(df$locus))){
     P1 <- makePlot(locus, df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly, yField=yField, xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
@@ -632,9 +712,9 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, locusPlots = c
   for (locus in locusPlots){
     print(paste0('Making plot for locus: ', locus))
     if (asEPS) {
-      postscript(paste0(fn,'.',locus,'.eps'), height = 500, width = singleLocusWidth)
+      postscript(paste0(fn,'.',locus,'.eps'), height = singleLocusHeight, width = singleLocusWidth)
     } else {
-      png(paste0(fn,'.', locus, '.png'), height = 500, width = singleLocusWidth)
+      png(paste0(fn,'.', locus, '.png'), height = singleLocusHeight, width = singleLocusWidth)
     }
     
     P_B <- makePlot(locus, df, tnfPosOnly=tnfPosOnly, pal=pal, showLegend=showLegend, yMax=yMax, bulkOnly=bulkOnly,yField='percentageForLocus', xField=xField, fillField=fillField, facet1=facet1, facet2=facet2, doFacet=doFacet)
