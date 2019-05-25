@@ -15,8 +15,15 @@ library(stringi)
 
 library(dtplyr)
 
-pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE){
-  df <- rbind(pullFullTranscriptMetaFromLabKey(filterClauses = filterClauses, replicateAsSuffix = replicateAsSuffix, collapseReplicates = collapseReplicates), pullEnrichedMetaFromLabKey(filterClauses = filterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, collapseReplicates = collapseReplicates, skipEnriched = skipEnriched))
+pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE, savePrefix, overwrite = T){
+  saveFile <- paste0(savePrefix, '.metadata.txt')
+  if (!overwrite && file.exists(saveFile)) {
+    print('reading metadata from file')
+    df <- read.table(saveFile, sep = '\t', header = T)
+  } else {
+    df <- rbind(pullFullTranscriptomeMetaFromLabKey(filterClauses = filterClauses, replicateAsSuffix = replicateAsSuffix, collapseReplicates = collapseReplicates), pullEnrichedMetaFromLabKey(filterClauses = filterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, collapseReplicates = collapseReplicates, skipEnriched = skipEnriched))
+    write.table(df, file = saveFile, row.names = F, quote = F, sep = '\t')
+  }
   
   if (requireGeneFile){
     df <- df[!is.na(df$OutputFileId),]  
@@ -26,6 +33,7 @@ pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL,
   
   df$ResponseType <- c('Other')
   df$ResponseType[df$Peptide %in% c('Gag120', 'Gag69')] <- c('MHC-E Supertope')
+  df$ResponseType[df$Peptide %in% c('Gag53', 'Gag73')] <- c('MHC-II Supertope')
   df$ResponseType[df$Peptide %in% c('Gag16', 'Gag18', 'Gag23', 'Gag30', 'Gag33', 'Gag50', 'Gag65', 'Gag97', 'Gag109', 'Gag119')] <- c('Other E-Restricted')
   df$ResponseType[df$Peptide %in% c('Gag27/28', 'Gag37')] <- c('Other Class II-Restricted')
   df$ResponseType[df$Peptide %in% c('RL8', 'RL9', 'RL10', 'QI9', 'LF8')] <- c('Conventional')
@@ -51,6 +59,7 @@ reLevelFactor <- function(f, ordered){
 }
 
 pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE){
+  print('downloading metadata for TCR enriched datasets')
   clauses <- list(
     c('enrichedReadsetId', 'NON_BLANK', ''), 
     c('enrichedReadsetId/totalFiles', 'GT', 0)
@@ -76,7 +85,7 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
     colSelect=c(
       'enrichedReadsetId','enrichedReadsetId/status','enrichedReadsetId/workbook','enrichedReadsetId/totalForwardReads','enrichedReadsetId/numCDR3s','enrichedReadsetId/distinctLoci','enrichedReadsetId/numTcrRuns',
       'sortId', 'sortId/stimId','sortId/stimId/animalId','sortId/stimId/date','sortId/stimId/stim','sortId/stimId/treatment','sortId/stimId/activated','sortId/stimId/background',
-      'sortId/population','sortId/replicate','sortId/cells', "rowid"
+      'sortId/population','sortId/replicate','sortId/cells', "rowid", "enrichedReadsetId/librarytype"
     ),
     containerFilter=NULL,
     colNameOpt='rname',
@@ -110,11 +119,16 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
     df$SeqDataType <- character()
   } else {
     df$SeqDataType <- c('TCR_Enriched')
+    df$SeqDataType[grep(x = df$enrichedreadsetid_librarytype, pattern = 'VDJ')] <- c('10x_VDJ')
+    
+    df$IsSingleCell[df$SeqDataType == '10x_VDJ'] <- F
   }
    
   df$SeqDataType <- as.factor(df$SeqDataType)
   
   df$Label <- as.character(df$Peptide)
+  
+  df <- df[!(names(df) %in% c('enrichedreadsetid_librarytype'))]
   
   if (nrow(df)> 0 && collapseReplicates){
     replicateAsSuffix <- FALSE
@@ -134,19 +148,22 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
   df$Label <- naturalfactor(df$Label)
   
   print(paste0('total TCR enriched rows: ' , nrow(df)))
+  print(paste0('total TCR enriched rows (non-10x): ' , sum(df$SeqDataType == 'TCR_Enriched')))
+  print(paste0('total TCR enriched rows (10x): ' , sum(df$SeqDataType == '10x_VDJ')))
   if (skipEnriched){
     print('dropping all TCR enriched rows')
-    df <- df[c(FALSE),]  
+    df <- df[df$SeqDataType == 'TCR_Enriched',]  
   }
 
-  
   return(df)
 }
 
-pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSuffix = TRUE, collapseReplicates = FALSE){
+pullFullTranscriptomeMetaFromLabKey <- function(filterClauses = NULL, replicateAsSuffix = TRUE, collapseReplicates = FALSE){
+  print('downloading metadata for whole transcriptome datasets')
   clauses = list(
     c('readsetId', 'NON_BLANK', ''), 
-    c('readsetId/totalFiles', 'GT', 0)
+    c('readsetId/totalFiles', 'GT', 0),
+    c('readsetId/librarytype', 'NEQ', '10x 5\' GEX')
   )
   
   if (!is.null(filterClauses) && !is.na(filterClauses)){
@@ -199,8 +216,10 @@ pullFullTranscriptMetaFromLabKey <- function(filterClauses = NULL, replicateAsSu
   names(df)[names(df)=="readsetid_status"] <- "Status"
   df$Status <- as.factor(df$Status)
   
-  df$SeqDataType <- 'Full_Transcriptome'
-  df$SeqDataType <- as.factor(df$SeqDataType)
+  if (nrow(df) > 0){
+    df$SeqDataType <- 'Full_Transcriptome'
+    df$SeqDataType <- as.factor(df$SeqDataType)
+  }
   
   df$Peptide <- naturalfactor(df$Peptide)
   
@@ -241,9 +260,8 @@ doSharedColumnRename <- function(df){
   if (nrow(df) == 0) {
     df$IsSingleCell <- logical()
   } else {
-    df$IsSingleCell <- df['Cells'] == 1  
+    df$IsSingleCell <- df['Cells'] == 1
   }
-  
   
   #TODO: consider if this is the best approach
   df$Replicate[df$IsSingleCell] <- c(NA)
@@ -266,7 +284,7 @@ doSharedColumnRename <- function(df){
   return(df)
 }
 
-pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
+pullTCRResultsFromLabKey <- function(colFilterClauses = NULL, savePrefix, overwrite = T){
   colFilter = NULL
   if (!is.null(colFilterClauses) && !is.na(colFilterClauses)){
     colFilter = do.call(makeFilter, colFilterClauses)
@@ -274,21 +292,30 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   
   if (!is.null(colFilter)){
     print('assay result filter')
-    print(colFilter)
+    print(paste0(colFilter, collapse = ';'))
 
   }
   
-  df <- labkey.selectRows(
-    baseUrl="https://prime-seq.ohsu.edu", 
-    folderPath="/Labs/Bimber/", 
-    schemaName="assay.TCRdb.TCRdb", 
-    queryName="Data", 
-    viewName="", 
-    colSelect=c('sampleName', 'subjectId','date','libraryId','libraryId/label','analysisId', 'analysisId/readset', 'locus','vHit','dHit','jHit','cHit','vGene', 'jGene','CDR3','count','fraction', 'disabled'), 
-    containerFilter=NULL,
-    colNameOpt='rname',
-    colFilter=colFilter
-  )
+  saveFile <- paste0(savePrefix, '.raw.results.txt')
+  if (!overwrite && file.exists(saveFile)) {
+    print('reading assay data from file')
+    df <- read.table(saveFile, sep = '\t', header = T)
+    df$date <- as.Date(as.character(df$date))
+  } else {
+    df <- labkey.selectRows(
+      baseUrl="https://prime-seq.ohsu.edu", 
+      folderPath="/Labs/Bimber/", 
+      schemaName="assay.TCRdb.TCRdb", 
+      queryName="Data", 
+      viewName="", 
+      colSelect=c('sampleName', 'cdna', 'subjectId','date','libraryId','libraryId/label','analysisId', 'analysisId/readset', 'locus','vHit','dHit','jHit','cHit','vGene', 'jGene','CDR3','count','fraction', 'disabled'), 
+      containerFilter=NULL,
+      colNameOpt='rname',
+      colFilter=colFilter
+    )
+    
+    write.table(df, file = saveFile, row.names = F, quote = F, sep = '\t')
+  }
   
   print(paste0('total assay rows (unfiltered): ', nrow(df)))
   
@@ -299,7 +326,7 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   
   df$LocusCDR3WithUsage <- paste0(df$locus, ":", df$cdr3,":",df$vgene,"-",df$jgene)
   df$LocusCDR3WithUsage <- as.factor(df$LocusCDR3WithUsage)
-  
+
   dateFormat <- date_format(format ="%Y-%m-%d")
   df$dateFormatted <- dateFormat(df$date)
   
@@ -310,17 +337,41 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL){
   return(df)
 }
 
-pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE, lowFreqThreshold = 0.05, backgroundThreshold = 0.5){
-  results <- pullTCRResultsFromLabKey(colFilterClauses = resultFilterClauses)
-  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched, collapseReplicates = collapseReplicates)
+pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses = NULL, separateEnriched = FALSE, replicateAsSuffix = TRUE, skipEnriched = FALSE, collapseReplicates = FALSE, lowFreqThreshold = 0.05, backgroundThreshold = 0.5, savePrefix = NULL, overwrite = T){
+  if (is.null(savePrefix)) {
+    stop('Must supply a save prefix')
+  }
+  
+  results <- pullTCRResultsFromLabKey(colFilterClauses = resultFilterClauses, savePrefix = savePrefix, overwrite = overwrite)
+  origResults <- nrow(results)
+
+  meta <- pullTCRMetaFromLabKey(requireGeneFile = FALSE, filterClauses = metaFilterClauses, separateEnriched = separateEnriched, replicateAsSuffix = replicateAsSuffix, skipEnriched = skipEnriched, collapseReplicates = collapseReplicates, savePrefix = savePrefix, overwrite = overwrite)
   meta$Label <- reorder(meta$Label)
   
-  results <- merge(results, meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId')) #, all.x=FALSE, all.y=FALSE
+  #Note: because cell hashing requires a one-to-many readset to cDNA relationship and b/c legacy data did not store the cDNA ID in the assay, split this:
+  
+  results1 <- merge(results[!is.na(results$cdna),], meta, by.x=c('cdna'), by.y=c('DatasetId')) 
+  print(nrow(results1))
+  results2 <- merge(results[is.na(results$cdna),], meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId')) 
+  print(nrow(results2))
+  if (all(names(results1) != names(results2))) {
+    print(names(results1))
+    print(names(results2))
+    stop('names not equal')
+  }
+  
+  results <- rbind(results1, results2)
   print(paste0('total merged rows (prefilter): ', nrow(results)))
 
+  # This will occur if the filtering on results and metadata are not the same
+  #if (origResults != nrow(results)){
+  #  write.table(results, file = 'results.txt', sep = '\t', row.names = F, quote = F)
+  #  stop(paste0('Rows not equal before/after merge: ', origResults, '/', nrow(results)))
+  #}
+  
   print(paste0('total merged rows: ', nrow(results)))
   
-  results <- qualityFilterResults(results)
+  results <- qualityFilterResults(results, savePrefix = savePrefix)
   print(paste0('total rows after quality filter: ', nrow(results)))
   
   results <- results %>% 
@@ -344,13 +395,12 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
     queryName="clones", 
     viewName="", 
     showHidden=TRUE,
-    colSelect=c('cloneName','chain','cdr3','animals'),
-    containerFilter=NULL,
+    colSelect=c('cloneName','chain','cdr3','displayname'),
     colNameOpt='rname'
   )
   colnames(labelDf)[colnames(labelDf)=="chain"] <- "locus"
   
-  labelDf$LabelCol <- paste0(labelDf$clonename)
+  labelDf$LabelCol <- coalesce(labelDf$displayname, labelDf$clonename)
   
   labelsGroup <- labelDf %>% 
     group_by(locus, cdr3) %>% 
@@ -365,7 +415,7 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
   return(list(results=results, meta = meta))
 }
 
-qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForSingle=150000, minReadCountForEnriched=5000){
+qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=500000, minReadCountForSingle=150000, minReadCountForEnriched=5000, savePrefix = NULL){
   print(paste0('performing quality filter, initial rows: ', nrow(df)))
   
   #TODO: restore this
@@ -373,29 +423,29 @@ qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount
   #df <- df[df$EstimatedLibrarySize > minLibrarySize,]
   #print(paste0('rows dropped for library size: ', (r - nrow(df))))
 
-  #r <- nrow(df)
-  toDrop <- unique(df[(df$SeqDataType == 'Full_Transcriptome' & !df$IsSingleCell & df$TotalReads < minReadCount),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads', 'IsSingleCell')])
-  write.table(toDrop, file = 'DropForReadCount.txt', sep = '\t', row.names = FALSE, quote = FALSE)
+  dropCols <- c('SeqDataType', 'AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads', 'IsSingleCell')
+  toDrop <- unique(df[(df$SeqDataType %in% c('Full_Transcriptome', '10x_VDJ') & !df$IsSingleCell & df$TotalReads < minReadCount),dropCols])
   
   r <- nrow(df)
-  df <- df[!(df$SeqDataType == 'Full_Transcriptome' & !df$IsSingleCell & df$TotalReads < minReadCount),]
+  df <- df[!(df$SeqDataType %in% c('Full_Transcriptome', '10x_VDJ') & !df$IsSingleCell & df$TotalReads < minReadCount),]
   print(paste0('total bulk RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
   r <- nrow(df)
-  toDrop <- unique(df[(df$SeqDataType == 'Full_Transcriptome' & df$IsSingleCell & df$TotalReads < minReadCountForSingle),c('AnimalId', 'SampleDate', 'Peptide', 'Population', 'TotalReads', 'IsSingleCell')])
-  write.table(toDrop, file = 'DropForReadCountSS.txt', sep = '\t', row.names = FALSE, quote = FALSE)
-
-  df <- df[!(df$SeqDataType == 'Full_Transcriptome' & df$IsSingleCell & df$TotalReads < minReadCountForSingle),]
+  toDrop <- rbind(toDrop, unique(df[(df$SeqDataType %in% c('Full_Transcriptome', '10x_VDJ') & df$IsSingleCell & df$TotalReads < minReadCountForSingle), toDropCols]))
+  df <- df[!(df$SeqDataType %in% c('Full_Transcriptome', '10x_VDJ') & df$IsSingleCell & df$TotalReads < minReadCountForSingle),]
   print(paste0('total single cell RNA rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
 
   r <- nrow(df)
+  toDrop <- rbind(toDrop, unique(df[(df$SeqDataType == 'TCR_Enriched' & df$TotalReads < minReadCountForEnriched), toDropCols]))
   df <- df[!(df$SeqDataType == 'TCR_Enriched' & df$TotalReads < minReadCountForEnriched),]
   print(paste0('total TCR enriched rows dropped for read count: ', (r - nrow(df)), ', remaining: ', nrow(df)))
   
-  return(df)
+  write.table(toDrop, file = paste0(savePrefix, '.DropForReadCount.txt'), sep = '\t', row.names = FALSE, quote = FALSE)
+
+    return(df)
 }
 
-groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 50, backgroundThreshold = 0.5, expandThreshold = 8){
+groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 20, backgroundThreshold = 0.5, expandThreshold = 8){
   #print(nrow(df))
   
   df <- df %>% 
@@ -415,7 +465,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus, totalTcrReadsForGroup, totalTcrReadsForGroupAndLocus, Cells) %>%
     summarize(count = sum(count))
 
-    dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
+  dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
   dfb$percentageForLocus = dfb$count / dfb$totalTcrReadsForGroupAndLocus
   r <- nrow(dfb)
   dfb <- dfb[dfb$totalTcrReadsForGroup >= minTcrReads,]
@@ -451,8 +501,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
   }
   dfs <- as.data.frame(dfs[,columns])
   
-  print(paste0('total single cell rows: ', nrow(dfs)))
-  
+  print(paste0('total single cell rows after grouping: ', nrow(dfs)))
   
   df <- rbind(dfb[columns], dfs[columns])
   print(paste0('combined: ', nrow(df)))
