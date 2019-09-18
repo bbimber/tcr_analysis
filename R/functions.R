@@ -300,7 +300,6 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL, savePrefix, overwr
   if (!overwrite && file.exists(saveFile)) {
     print('reading assay data from file')
     df <- read.table(saveFile, sep = '\t', header = T)
-    df$date <- as.Date(as.character(df$date))
   } else {
     df <- labkey.selectRows(
       baseUrl="https://prime-seq.ohsu.edu", 
@@ -308,7 +307,7 @@ pullTCRResultsFromLabKey <- function(colFilterClauses = NULL, savePrefix, overwr
       schemaName="assay.TCRdb.TCRdb", 
       queryName="Data", 
       viewName="", 
-      colSelect=c('sampleName', 'cdna', 'subjectId','date','libraryId','libraryId/label','analysisId', 'analysisId/readset', 'locus','vHit','dHit','jHit','cHit','vGene', 'jGene','CDR3','count','fraction', 'disabled'), 
+      colSelect=c('sampleName', 'cdna', 'calculatedPopulation', 'libraryId','libraryId/label','analysisId', 'analysisId/readset', 'locus','vHit','dHit','jHit','cHit','vGene', 'jGene','CDR3','count','fraction', 'disabled'), 
       containerFilter=NULL,
       colNameOpt='rname',
       colFilter=colFilter
@@ -346,13 +345,14 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
   meta$Label <- reorder(meta$Label)
   
   #Note: because cell hashing requires a one-to-many readset to cDNA relationship and b/c legacy data did not store the cDNA ID in the assay, split this:
-  
   results1 <- merge(results[!is.na(results$cdna),], meta, by.x=c('cdna'), by.y=c('DatasetId')) 
   results1 <- results1[ , -which(names(results1) %in% c("ReadsetId"))]
+  print(paste0('Rows with metadata identified by cDNA: ', nrow(results1)))
 
   results2 <- merge(results[is.na(results$cdna),], meta, by.x=c('analysisid_readset'), by.y=c('ReadsetId')) 
   results2 <- results2[ , -which(names(results2) %in% c("DatasetId"))]
   results2 <- results2[names(results1)]
+  print(paste0('Rows with metadata not identified by cDNA: ', nrow(results2)))
   
   print(nrow(results2))
   if (!all(names(results1) == names(results2))) {
@@ -364,6 +364,13 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
   results <- rbind(results1, results2)
   print(paste0('total merged rows (prefilter): ', nrow(results)))
 
+  # This is to allow TCR results to be imported for subsets, such as based on transcription:
+  if (sum(!is.na(results$calculatedpopulation)) > 0) {
+    results$Population <- as.character(results$Population)
+    results$Population[!is.na(results$calculatedpopulation)] <- as.character(results$calculatedpopulation[!is.na(results$calculatedpopulation)])
+    results$Population <- as.factor(results$Population)
+  }
+  
   # This will occur if the filters supplied for  results and metadata are not the same
   if (origResults != nrow(results)){
     print(paste0('Total results are equal before/after merge: ', origResults, '/', nrow(results)))
@@ -458,13 +465,13 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
 
   #bulk
   dfb <- df[!df$IsSingleCell,]
-  columns <- c('SeqDataType', 'StimId', 'Population', 'IsSingleCell', 'Label', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'date', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Replicate', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
+  columns <- c('SeqDataType', 'StimId', 'Population', 'IsSingleCell', 'Label', 'AnimalId', 'SampleDate', 'Peptide', 'Treatment', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Replicate', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
   if (nrow(dfb) > 1) {
     dfb$totalCellsForGroupAndLocus <- dfb$totalCellsForGroupAndLocusBulk
   
     #this allows replicates to collapse:
     dfb <- dfb %>%
-      group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus, totalTcrReadsForGroup, totalTcrReadsForGroupAndLocus, Cells) %>%
+      group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus, totalTcrReadsForGroup, totalTcrReadsForGroupAndLocus, Cells) %>%
       summarize(count = sum(count))
   
     dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
@@ -495,7 +502,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     dfs$ScaledCells <- dfs$Cells / dfs$totalCDR3ForCellAndLocus
     
     dfs <- dfs %>%
-      group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, date, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus) %>%
+      group_by(SeqDataType, StimId, Population, IsSingleCell, Label, AnimalId, SampleDate, Peptide, Treatment, locus, vhit, jhit, cdr3, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus) %>%
       summarize(totalCellsForCDR3 = sum(ScaledCells))
     dfs$Cells <- c(1)
     dfs$count <- dfs$totalCellsForCDR3
