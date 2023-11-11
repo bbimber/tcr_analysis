@@ -63,8 +63,10 @@ pullTCRMetaFromLabKey <- function(requireGeneFile = FALSE, filterClauses = NULL,
     df$ResponseType <- character()
   }
   
+  print('spot')
+  print('Tissue' %in% names(df))
   df <- df %>% 
-    group_by(SeqDataType, SampleId, Population, Replicate, IsSingleCell) %>% 
+    group_by(SeqDataType, SampleId, Population, Tissue, Replicate, IsSingleCell) %>% 
     mutate(totalCellsForGroup = sum(Cells))
   
   return(df)
@@ -109,7 +111,7 @@ pullEnrichedMetaFromLabKey <- function(filterClauses = NULL, separateEnriched = 
     colSelect=c(
       'tcrreadsetid','tcrreadsetid/status','tcrreadsetid/workbook','tcrreadsetid/totalForwardReads','tcrreadsetid/numCDR3s','tcrreadsetid/distinctLoci','tcrreadsetid/numTcrRuns',
       'sortId', 'sortId/sampleId','sortId/sampleId/subjectId','sortId/sampleId/sampledate','sortId/sampleId/stim','sortId/sampleId/assayType',
-      'sortId/population','sortId/replicate','sortId/cells', "rowid", "status", "tcrreadsetid/librarytype"
+      'sortId/population','sortId/sampleId/tissue','sortId/replicate','sortId/cells', "rowid", "status", "tcrreadsetid/librarytype"
     ),
     containerFilter=NULL,
     colNameOpt='rname',
@@ -213,7 +215,7 @@ pullFullTranscriptomeMetaFromLabKey <- function(filterClauses = NULL, replicateA
     colSelect=c(
       'readsetId','readsetId/status','readsetId/workbook','readsetId/totalForwardReads','readsetId/numCDR3s','readsetId/distinctLoci','readsetId/numTcrRuns',
       'sortId', 'sortId/sampleId','sortId/sampleId/subjectId','sortId/sampleId/sampledate','sortId/sampleId/stim','sortId/sampleId/assayType',
-      'sortId/population','sortId/replicate','sortId/cells', "rowid", "status"
+      'sortId/population','sortId/sampleId/tissue','sortId/replicate','sortId/cells', "rowid", "status"
     ),
     containerFilter=NULL,
     colNameOpt='rname',
@@ -312,6 +314,9 @@ doSharedColumnRename <- function(df){
   names(df)[names(df)=="sortid_population"] <- "Population"
   df$Population <- naturalfactor(df$Population)
   
+  names(df)[names(df)=="sortid_sampleid_tissue"] <- "Tissue"
+  df$Tissue <- naturalfactor(df$Tissue)
+  
   names(df)[names(df)=="sortid_sampleid"] <- "SampleId"
   df$SampleId <- as.integer(df$SampleId)
   
@@ -320,7 +325,7 @@ doSharedColumnRename <- function(df){
 
 pullTCRResultsFromLabKey <- function(colFilterClauses = NULL, savePrefix, overwrite = T, folderPath = "/Labs/Bimber/"){
   colFilter = NULL
-  if (!is.null(colFilterClauses) && !is.na(colFilterClauses)){
+  if (!all(is.null(colFilterClauses)) && !all(is.na(colFilterClauses))){
     colFilter = do.call(makeFilter, colFilterClauses)
   }
   
@@ -417,11 +422,11 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
   print(paste0('total rows after quality filter: ', nrow(results)))
   
   results <- results %>% 
-    group_by(SeqDataType, SampleId, Population, Replicate, IsSingleCell, locus) %>% 
+    group_by(SeqDataType, SampleId, Population, Tissue, Replicate, IsSingleCell, locus) %>% 
     mutate(totalCellsForGroupAndLocusBulk = sum(Cells), totalCellsForGroupAndLocusSS = n_distinct(analysisid))
   
   results <- results %>% 
-    group_by(SeqDataType, SampleId, Population, Replicate, IsSingleCell, locus, analysisid) %>% 
+    group_by(SeqDataType, SampleId, Population, Tissue, Replicate, IsSingleCell, locus, analysisid) %>% 
     mutate(totalCDR3ForCellAndLocus = n())
   
   print(paste0('total merged rows after group: ', nrow(results)))
@@ -429,15 +434,8 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
   dateFormat <- date_format(format ="%Y-%m-%d")
   results$dateFormatted <- dateFormat(as.Date(results$SampleDate))
   
-  results <- groupSingleCellData(results, lowFreqThreshold = lowFreqThreshold, backgroundThreshold = backgroundThreshold)
-  if (!all(is.na(results)) && nrow(results) > 0) {
-    results <- filterBasedOnCellCount(results)
-  } else {
-    print('No rows in results')
-    return(NA)
-  }
-  
   # Add clone names:
+  print('Adding CloneName')
   labelDf <- suppressWarnings(labkey.selectRows(
     baseUrl="https://prime-seq.ohsu.edu", 
     folderPath=folderPath, 
@@ -458,6 +456,14 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
   
   results <- merge(results, labelsGroup, by.x = c('locus', 'cdr3'), by.y = c('locus', 'cdr3'), all.x = TRUE, all.y = FALSE)
   
+  results <- groupSingleCellData(results, lowFreqThreshold = lowFreqThreshold, backgroundThreshold = backgroundThreshold)
+  if (!all(is.na(results)) && nrow(results) > 0) {
+    results <- filterBasedOnCellCount(results)
+  } else {
+    print('No rows in results')
+    return(NA)
+  }  
+  
   results$LocusCDR3 <- as.character(results$LocusCDR3)
   results$LocusCDR3[!is.na(results$CloneName) & !results$IsFiltered] <- results$CloneName[!is.na(results$CloneName) & !results$IsFiltered]
   results$LocusCDR3 <- as.factor(results$LocusCDR3)
@@ -468,7 +474,7 @@ pullResultsFromLabKey <- function(resultFilterClauses = NULL, metaFilterClauses 
 qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount=150000, minReadCountForSingle=150000, minReadCountForEnriched=5000, savePrefix = NULL){
   print(paste0('performing quality filter, initial rows: ', nrow(df)))
   
-  dropCols <- c('SeqDataType', 'SubjectId', 'SampleDate', 'Peptide', 'Population', 'TotalReads', 'IsSingleCell', 'count')
+  dropCols <- c('SeqDataType', 'SubjectId', 'SampleDate', 'Peptide', 'Population', 'Tissue', 'TotalReads', 'IsSingleCell', 'count')
   toDrop <- unique(df[(df$SeqDataType %in% c('Full_Transcriptome', '10x_VDJ') & !df$IsSingleCell & df$TotalReads < minReadCount),dropCols])
   
   r <- nrow(df)
@@ -492,22 +498,22 @@ qualityFilterResults <- function(df = NULL, minLibrarySize=2000000, minReadCount
 
 groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads = 10, backgroundThreshold = 0.5, expandThreshold = 12){
   df <- df %>% 
-    group_by(SeqDataType, SampleId, Population, Replicate, IsSingleCell) %>% 
+    group_by(SeqDataType, SampleId, Population, Tissue, Replicate, IsSingleCell) %>% 
     mutate(totalTcrReadsForGroup = sum(count))
   
   df <- df %>% 
-    group_by(SeqDataType, SampleId, Population, Replicate, IsSingleCell, locus) %>% 
+    group_by(SeqDataType, SampleId, Population, Tissue, Replicate, IsSingleCell, locus) %>% 
     mutate(totalTcrReadsForGroupAndLocus = sum(count))
 
   #bulk
   dfb <- df[!df$IsSingleCell,]
-  columns <- c('DatasetId', 'SeqDataType', 'SampleId', 'Population', 'IsSingleCell', 'Label', 'SubjectId', 'SampleDate', 'Peptide', 'AssayType', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Replicate', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
+  columns <- c('DatasetId', 'SeqDataType', 'SampleId', 'Population', 'Tissue', 'IsSingleCell', 'Label', 'CloneName', 'SubjectId', 'SampleDate', 'Peptide', 'AssayType', 'locus', 'vhit', 'jhit', 'cdr3', 'count', 'dateFormatted', 'LocusCDR3', 'LocusCDR3WithUsage', 'Replicate', 'totalCellsForGroup', 'totalCellsForGroupAndLocus', 'Cells', 'percentage', 'percentageForLocus', 'totalCellsForCDR3')
   if (nrow(dfb) > 1) {
     dfb$totalCellsForGroupAndLocus <- dfb$totalCellsForGroupAndLocusBulk
   
     #this allows replicates to collapse:
     dfb <- dfb %>%
-      group_by(DatasetId, SeqDataType, SampleId, Population, IsSingleCell, Label, SubjectId, SampleDate, Peptide, AssayType, locus, vhit, jhit, cdr3, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus, totalTcrReadsForGroup, totalTcrReadsForGroupAndLocus, Cells) %>%
+      group_by(DatasetId, SeqDataType, SampleId, Population, Tissue, IsSingleCell, Label, CloneName, SubjectId, SampleDate, Peptide, AssayType, locus, vhit, jhit, cdr3, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus, totalTcrReadsForGroup, totalTcrReadsForGroupAndLocus, Cells) %>%
       summarize(count = sum(count))
     dfb$percentage = dfb$count / dfb$totalTcrReadsForGroup
     dfb$percentageForLocus = dfb$count / dfb$totalTcrReadsForGroupAndLocus
@@ -537,7 +543,7 @@ groupSingleCellData <- function(df = NULL, lowFreqThreshold = 0.05, minTcrReads 
     dfs$ScaledCells <- dfs$Cells / dfs$totalCDR3ForCellAndLocus
     dfs$DatasetId <- paste0(dfs$SeqDataType, '-', dfs$SampleId)
     dfs <- dfs %>%
-      group_by(DatasetId, SeqDataType, SampleId, Population, IsSingleCell, Label, SubjectId, SampleDate, Peptide, AssayType, locus, vhit, jhit, cdr3, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus) %>%
+      group_by(DatasetId, SeqDataType, SampleId, Population, Tissue, IsSingleCell, Label, CloneName, SubjectId, SampleDate, Peptide, AssayType, locus, vhit, jhit, cdr3, dateFormatted, LocusCDR3, LocusCDR3WithUsage, Replicate, totalCellsForGroup, totalCellsForGroupAndLocus) %>%
       summarize(totalCellsForCDR3 = sum(ScaledCells))
     dfs$Cells <- c(1)
     dfs$count <- dfs$totalCellsForCDR3
@@ -708,7 +714,7 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
     return(ggplot(data.frame()) +geom_blank())
   }
   
-  if (is.na(colorSteps)) {
+  if (all(is.na(colorSteps))) {
     colorSteps <- min(9, totalCDR3)
     colorSteps <- max(3, colorSteps)
   }
@@ -845,7 +851,7 @@ makePlot <- function(locus, df, pal = 'Reds', bulkOnly = FALSE, tnfPosOnly = FAL
   return(P1)
 }
 
-makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, locusPlots = c('TRB'), pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE, allLocusWidth=1800, singleLocusWidth=1000, singleLocusHeight=500, asEPS = FALSE, doFacet=TRUE, facet1 = 'Population', facet2 = 'dateFormatted', lowFreqThreshold = 0.05, plotTitle = NULL, reverseColors = F, doPrint = T, repeatGrouping = F){
+makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, locusPlots = c('TRB'), pal='Reds', showLegend=FALSE, bulkOnly=FALSE, yMax=NA, yField='percentage', xField='Label', fillField='LocusCDR3', replicateAsSuffix = TRUE, allLocusWidth=1800, singleLocusWidth=1000, singleLocusHeight=500, asEPS = FALSE, doFacet=TRUE, facet1 = 'Population', facet2 = 'dateFormatted', lowFreqThreshold = 0.05, plotTitle = NULL, reverseColors = F, doPrint = T, repeatGrouping = F, noLegend = F){
   plots = list()
   i = 1
 
@@ -899,6 +905,10 @@ makePlotGroup <- function(df, subDir, basename, tnfPosOnly=FALSE, locusPlots = c
       P_B = P_B + labs(title = NULL)
     } else {
       P_B = P_B + labs(title = plotTitle)
+    }
+    
+    if (noLegend) {
+      P_B <- P_B + theme(legend.position = 'none')
     }
     
     print(P_B)
